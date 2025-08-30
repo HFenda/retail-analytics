@@ -1,0 +1,40 @@
+# Python cache & venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.npy
+*.npz
+.venv/
+venv/
+env/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ML outputs / results
+outputs/
+*.jpg
+*.png
+*.csv
+*.mp4
+
+# Local configs / secrets
+.env
+*.log
+
+# Node/Frontend
+frontend/node_modules/
+frontend/.next/
