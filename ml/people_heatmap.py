@@ -1,5 +1,6 @@
 import argparse, os, cv2, numpy as np, time
 from pathlib import Path
+from typing import Dict, Any, Tuple
 
 try:
     from scipy.ndimage import gaussian_filter
@@ -299,6 +300,155 @@ def composite_png_on_image(base_bgr, overlay_rgba_path, out_path, alpha_boost=1.
     cv2.imwrite(out_path, out)
 
 
+# -------------- public runner ----------------
+
+def run_people_heatmap(
+    video: str,
+    outdir: str = "outputs",
+    model: str = "models/yolov8n.pt",
+    stride: int = 2,
+    conf: float = 0.4,
+    resize_w: int = 960,
+    radius: int = 12,
+    alpha: float = 0.65,
+    mask_thr: float = 0.05,
+    mode: str = "balanced",
+    bg: str = "median",
+    detect_every: int = 5,
+    auto_intensity: int = 1,
+    gamma: float = 1.0,
+    color_gain: float = 0.7,
+    ref_image: str = None,
+    ref_alpha: float = 0.65,      # zadržano zbog CLI kompatibilnosti
+    ref_out: str = "heat_on_reference.png",
+    ref_from_video: int = 0,
+    ref_time: float = 0.0,
+    ref_save: str = "reference_frame_hq.jpg",
+    ref_alpha_boost: float = 1.0,
+    min_area: int = 300,
+    mog_history: int = 400,
+    mog_var: float = 32.0,
+    norm_p: float = 95.0,
+    hm_power: float = 1.0,
+    progress: int = 1
+) -> Dict[str, Any]:
+    """
+    Pokreće generisanje heatmape kretanja i sve isto sprema kao CLI.
+    Vraća putanje artefakata + statistiku i korištene parametre normalizacije.
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    model_path = Path(model)
+    if not model_path.exists():
+        model_path = Path("yolov8n.pt")
+    mdl = YOLO(str(model_path))
+
+    # Pozadina
+    bg_img = compute_background(video, sample_step=30, resize_w=resize_w,
+                                mode=bg, show_progress=bool(progress))
+
+    # Akumulacija
+    heat_raw, stats = accumulate_heat(
+        video, mdl,
+        stride=stride, conf=conf, resize_w=resize_w, radius=radius,
+        mode=mode, detect_every=detect_every, show_progress=bool(progress),
+        mog_history=mog_history, mog_var=mog_var, min_area=min_area
+    )
+
+    # Normalizacija u [0..1]
+    minutes = max(1.0, stats["duration_sec"] / 60.0)
+    if auto_intensity:
+        heat_rate = heat_raw / minutes
+        nz = heat_rate[heat_rate > 0]
+        p = float(np.clip(norm_p, 50.0, 99.9))
+        p95 = float(np.percentile(nz, p)) if nz.size > 0 else 1e-6
+        hm = np.clip(heat_rate / max(p95, 1e-6), 0.0, 1.0)
+        gamma_used = float(np.clip(1.0 + 0.18 * np.log10(minutes), 1.0, 1.8))
+        hm = hm ** (gamma_used * float(hm_power))
+        color_gain_used = float(np.clip(color_gain * (0.95 / (1.0 + 0.35*np.log10(minutes))), 0.45, 0.9))
+        thr_used = float(np.clip(mask_thr * (1.0 + 0.25*np.log10(minutes)), 0.03, 0.25))
+    else:
+        hm = heat_raw - heat_raw.min()
+        mx = hm.max()
+        if mx > 1e-6:
+            hm = hm / mx
+        if gamma and gamma != 1.0:
+            hm = hm ** float(gamma)
+        gamma_used = float(gamma)
+        color_gain_used = float(color_gain)
+        thr_used = float(mask_thr)
+
+    # Spremanja
+    overlay, heat_color, (heat_u8, _) = overlay_heat_on_bg(
+        bg_img, hm, alpha=alpha, thr=thr_used,
+        colormap=cv2.COLORMAP_TURBO, color_gain=color_gain_used
+    )
+
+    overlay_path = os.path.join(outdir, "heatmap_overlay.png")
+    colored_path = os.path.join(outdir, "heatmap_colored.png")
+    gray_path    = os.path.join(outdir, "heatmap_gray.png")
+    npy_path     = os.path.join(outdir, "heatmap.npy")
+    cv2.imwrite(overlay_path, overlay)
+    cv2.imwrite(colored_path, heat_color)
+    cv2.imwrite(gray_path, heat_u8)
+    np.save(npy_path, hm)
+
+    # RGBA export
+    rgba_path = os.path.join(outdir, "heatmap_transparent.png")
+    save_transparent_png(heat_u8, bg_img.shape, thr=int(thr_used*255), out_path=rgba_path)
+
+    # Finalni HQ overlay
+    made_ref = False
+    ref_out_path = os.path.join(outdir, ref_out)
+    try:
+        if ref_from_video:
+            ref_bgr = grab_frame_hq(video, t_sec=ref_time)
+            cv2.imwrite(os.path.join(outdir, ref_save), ref_bgr)
+        else:
+            if not ref_image:
+                raise RuntimeError("Nije zadano ni ref_image ni ref_from_video=1.")
+            ref_bgr = cv2.imread(ref_image, cv2.IMREAD_COLOR)
+            if ref_bgr is None:
+                raise RuntimeError(f"Ne mogu pročitati referentnu sliku: {ref_image}")
+
+        composite_png_on_image(ref_bgr, rgba_path, ref_out_path, alpha_boost=ref_alpha_boost)
+        made_ref = True
+    except Exception as e:
+        print("Upozorenje: finalni HQ overlay nije uspio:", e)
+
+    # Preview
+    preview = overlay.copy()
+    cv2.putText(preview, "Heatmap of movement (people)", (18, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (10,10,10), 3, cv2.LINE_AA)
+    cv2.putText(preview, "Heatmap of movement (people)", (18, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240,240,240), 1, cv2.LINE_AA)
+    preview_path = os.path.join(outdir, "preview.jpg")
+    cv2.imwrite(preview_path, preview)
+
+    return {
+        "stats": stats,
+        "minutes": minutes,
+        "gamma_used": float(gamma_used),
+        "color_gain_used": float(color_gain_used),
+        "thr_used": float(thr_used),
+        "artifacts": {
+            "overlay": overlay_path,
+            "colored": colored_path,
+            "gray": gray_path,
+            "transparent_png": rgba_path,
+            "npy": npy_path,
+            "preview": preview_path,
+            "ref_out": (ref_out_path if made_ref else None),
+        },
+        "params": {
+            "video": video, "outdir": outdir, "model": str(model_path),
+            "stride": stride, "conf": conf, "resize_w": resize_w, "radius": radius,
+            "mode": mode, "bg": bg, "detect_every": detect_every,
+            "auto_intensity": auto_intensity, "norm_p": norm_p, "hm_power": hm_power
+        }
+    }
+
+
 # -------------- main ----------------
 
 def main():
@@ -357,109 +507,32 @@ def main():
     ap.add_argument("--progress", type=int, default=1, choices=[0,1], help="Prikaži progres i ETA (1) ili ne (0)")
     args = ap.parse_args()
 
-    os.makedirs(args.outdir, exist_ok=True)
-
-    model_path = Path(args.model)
-    if not model_path.exists():
-        model_path = "yolov8n.pt"
-
-    model = YOLO(str(model_path))
-
-    # Pozadina (za preview/overlay varijantu)
-    bg = compute_background(args.video, sample_step=30, resize_w=args.resize_w,
-                            mode=args.bg, show_progress=bool(args.progress))
-
-    # Akumulacija (RAW heat + statistika) u nižoj rezoluciji radi brzine
-    heat_raw, stats = accumulate_heat(
-        args.video, model,
-        stride=args.stride, conf=args.conf, resize_w=args.resize_w, radius=args.radius,
-        mode=args.mode, detect_every=args.detect_every, show_progress=bool(args.progress),
-        mog_history=args.mog_history, mog_var=args.mog_var, min_area=args.min_area
+    res = run_people_heatmap(
+        video=args.video, outdir=args.outdir, model=args.model, stride=args.stride,
+        conf=args.conf, resize_w=args.resize_w, radius=args.radius, alpha=args.alpha,
+        mask_thr=args.mask_thr, mode=args.mode, bg=args.bg, detect_every=args.detect_every,
+        auto_intensity=args.auto_intensity, gamma=args.gamma, color_gain=args.color_gain,
+        ref_image=args.ref_image, ref_alpha=args.ref_alpha, ref_out=args.ref_out,
+        ref_from_video=args.ref_from_video, ref_time=args.ref_time, ref_save=args.ref_save,
+        ref_alpha_boost=args.ref_alpha_boost, min_area=args.min_area, mog_history=args.mog_history,
+        mog_var=args.mog_var, norm_p=args.norm_p, hm_power=args.hm_power, progress=args.progress
     )
-
-    # ---- Automatsko mapiranje intenziteta u [0..1] ----
-    minutes = max(1.0, stats["duration_sec"] / 60.0)
-
-    if args.auto_intensity:
-        heat_rate = heat_raw / minutes
-        nz = heat_rate[heat_rate > 0]
-        p = float(np.clip(args.norm_p, 50.0, 99.9))
-        p95 = float(np.percentile(nz, p)) if nz.size > 0 else 1e-6
-        hm = np.clip(heat_rate / max(p95, 1e-6), 0.0, 1.0)
-        gamma = float(np.clip(1.0 + 0.18 * np.log10(minutes), 1.0, 1.8))
-        hm = hm ** (gamma * float(args.hm_power))
-        color_gain_used = float(np.clip(args.color_gain * (0.95 / (1.0 + 0.35*np.log10(minutes))), 0.45, 0.9))
-        thr_used = float(np.clip(args.mask_thr * (1.0 + 0.25*np.log10(minutes)), 0.03, 0.25))
-    else:
-        hm = heat_raw - heat_raw.min()
-        mx = hm.max()
-        if mx > 1e-6:
-            hm = hm / mx
-        if args.gamma and args.gamma != 1.0:
-            hm = hm ** float(args.gamma)
-        color_gain_used = args.color_gain
-        thr_used = args.mask_thr
-
-    # Overlay za pregled na pozadini iz videa (low-res)
-    overlay, heat_color, (heat_u8, _) = overlay_heat_on_bg(
-        bg, hm, alpha=args.alpha, thr=thr_used,
-        colormap=cv2.COLORMAP_TURBO, color_gain=color_gain_used
-    )
-
-    cv2.imwrite(os.path.join(args.outdir, "heatmap_overlay.png"), overlay)
-    cv2.imwrite(os.path.join(args.outdir, "heatmap_colored.png"), heat_color)
-    cv2.imwrite(os.path.join(args.outdir, "heatmap_gray.png"), heat_u8)
-    np.save(os.path.join(args.outdir, "heatmap.npy"), hm)
-
-    # export RGBA mask
-    rgba_path = os.path.join(args.outdir, "heatmap_transparent.png")
-    save_transparent_png(heat_u8, bg.shape, thr=int(thr_used*255), out_path=rgba_path)
-
-    # ---- Final: isključivo heatmap_transparent na HQ sliku ----
-    made_ref = False
-    try:
-        if args.ref_from_video:
-            ref_bgr = grab_frame_hq(args.video, t_sec=args.ref_time)
-            cv2.imwrite(os.path.join(args.outdir, args.ref_save), ref_bgr)  # evidencija
-        else:
-            if not args.ref_image:
-                raise RuntimeError("Nije zadano ni --ref_image ni --ref_from_video=1.")
-            ref_bgr = cv2.imread(args.ref_image, cv2.IMREAD_COLOR)
-            if ref_bgr is None:
-                raise RuntimeError(f"Ne mogu pročitati referentnu sliku: {args.ref_image}")
-
-        ref_out_path = os.path.join(args.outdir, args.ref_out)
-        composite_png_on_image(ref_bgr, rgba_path, ref_out_path, alpha_boost=args.ref_alpha_boost)
-        made_ref = True
-    except Exception as e:
-        print("Upozorenje: finalni HQ overlay nije uspio:", e)
-
-    # Kratki preview s naslovom (low-res)
-    preview = overlay.copy()
-    cv2.putText(preview, "Heatmap of movement (people)", (18, 36),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (10,10,10), 3, cv2.LINE_AA)
-    cv2.putText(preview, "Heatmap of movement (people)", (18, 36),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240,240,240), 1, cv2.LINE_AA)
-    cv2.imwrite(os.path.join(args.outdir, "preview.jpg"), preview)
 
     print("\nSačuvano u:", args.outdir)
     print(" - heatmap_overlay.png (pozadina iz videa + obojena heatmapa, low-res)")
     print(" - heatmap_colored.png (samo heatmapa u boji, low-res)")
     print(" - heatmap_transparent.png (PNG sa alfa kanalom)")
     print(" - heatmap_gray.png i heatmap.npy (sirovi podaci)")
-    if made_ref:
-        print(f" - {args.ref_out} (heatmap nalijepljena na referentnu HQ sliku)")
+    if res["artifacts"]["ref_out"]:
+        print(f" - {Path(res['artifacts']['ref_out']).name} (heatmap nalijepljena na referentnu HQ sliku)")
 
     print("\nStatistika:")
-    print(f"   Trajanje videa: { _fmt_time(int(stats['duration_sec'])) }  ({minutes:.1f} min)")
-    print(f"   FPS: {stats['fps']:.2f}, total frames: {stats['total_frames']}, processed: {stats['processed_frames']}")
-    print(f"   Mode: {stats['mode']}, stride: {stats['stride']}, detect_every: {stats['detect_every']}")
-    print(f"   Detections: {stats['detections']}, weight_sum: {stats['weight_sum']:.1f}")
-    if args.auto_intensity:
-        print(f"   AUTO intensity → gamma: {gamma:.2f}, color_gain: {color_gain_used:.2f}, mask_thr: {thr_used:.3f}")
-    else:
-        print(f"   Manual intensity → gamma: {args.gamma:.2f}, color_gain: {color_gain_used:.2f}, mask_thr: {thr_used:.3f}")
-
+    st = res["stats"]
+    print(f"   Trajanje videa: { _fmt_time(int(st['duration_sec'])) }  ({res['minutes']:.1f} min)")
+    print(f"   FPS: {st['fps']:.2f}, total frames: {st['total_frames']}, processed: {st['processed_frames']}")
+    print(f"   Mode: {st['mode']}, stride: {st['stride']}, detect_every: {st['detect_every']}")
+    print(f"   Detections: {st['detections']}, weight_sum: {st['weight_sum']:.1f}")
+    print(f"   Intensity → gamma: {res['gamma_used']:.2f}, color_gain: {res['color_gain_used']:.2f}, mask_thr: {res['thr_used']:.3f}")
 
 if __name__ == "__main__":
     main()

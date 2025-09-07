@@ -1,11 +1,11 @@
-from .unique_count import run_count
-from .heatmap import run_heatmap
+from .unique_count import run_unique_count
 from .analyze import run_analysis
-from .peak import run_peak
+from .people_heatmap import run_people_heatmap
+from .snapshot_peak import run_snapshot_peak
 
 __all__ = [
-    "run_count",
-    "run_heatmap",
+    "run_unique_count",
     "run_analysis",
-    "run_peak",
+    "run_people_heatmap",
+    "run_snapshot_peak",
 ]

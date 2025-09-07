@@ -3,6 +3,7 @@ import argparse, csv, os
 from pathlib import Path
 import cv2
 from ultralytics import YOLO
+from typing import Dict, Any, List
 
 def read_fps(video_path: str) -> float:
     cap = cv2.VideoCapture(video_path)
@@ -28,7 +29,6 @@ def find_peak_from_counts(counts_csv: str):
 
 def frame_to_seconds(frame_idx: int, fps: float, stride: int) -> float:
     # frame_idx je broj "procesiranog" frame-a (poslije stride-a)
-    # timestamp = (frame_idx * stride) / fps
     return (frame_idx * stride) / fps
 
 def grab_frame_at_time(video_path: str, t_seconds: float):
@@ -66,6 +66,67 @@ def detect_and_draw(model_path: str, frame, conf: float = 0.4, imgsz: int = 640)
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
     return img, res
 
+# ---------------- public runner ----------------
+
+def run_snapshot_peak(
+    video: str,
+    counts_csv: str,
+    vid_stride: int,
+    out: str = "snapshot_peak.jpg",
+    model: str = "yolov8n.pt",
+    conf: float = 0.4,
+    imgsz: int = 640,
+    window: float = 0.0
+) -> Dict[str, Any]:
+    """
+    Nađe najprometniji trenutak iz counts CSV-a i snimi snapshot s bboxovima.
+    Ako je window > 0, skenira ±window sekundi oko peaka i bira kadar s najviše detekcija.
+
+    Returns:
+        {
+          "out": "path/to/snapshot.jpg",
+          "peak": {"frame": int, "count": int, "t_sec": float},
+          "searched_times": [float, ...],
+          "best_count": int
+        }
+    """
+    fps = read_fps(video)
+    peak_frame, peak_count = find_peak_from_counts(counts_csv)
+    t_peak = frame_to_seconds(peak_frame, fps, int(vid_stride))
+
+    # kandidati za fino traženje oko peaka
+    candidates: List[float] = [t_peak]
+    if window and window > 0:
+        step = max(1.0 / fps, 0.2)  # ~5 fps ili finije
+        t = float(window)
+        sweep = [t_peak + dt for dt in [x * step for x in range(int(-t/step), int(t/step) + 1)]]
+        candidates = sorted(set([round(x, 2) for x in sweep]))
+
+    best_img, best_n = None, -1
+    for t in candidates:
+        frame = grab_frame_at_time(video, t)
+        img, res = detect_and_draw(model, frame, conf=conf, imgsz=imgsz)
+        persons = len(res.boxes) if (res.boxes is not None) else 0
+        if persons > best_n:
+            best_n = persons
+            best_img = img.copy()
+
+    if best_img is None:
+        # fallback: makar snimi „sirovi” frame na t_peak
+        best_img = grab_frame_at_time(video, t_peak)
+
+    Path(os.path.dirname(out) or ".").mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(out, best_img)
+
+    return {
+        "out": out,
+        "peak": {"frame": int(peak_frame), "count": int(peak_count), "t_sec": float(t_peak)},
+        "searched_times": candidates,
+        "best_count": int(best_n)
+    }
+
+# ---------------- CLI ----------------
+
 def main():
     ap = argparse.ArgumentParser(description="Snimi snapshot najprometnijeg trenutka sa boxovima.")
     ap.add_argument("--video", required=True, help="Put do video fajla")
@@ -79,39 +140,20 @@ def main():
     ap.add_argument("--out", default="snapshot_peak.jpg", help="Output slika")
     args = ap.parse_args()
 
-    fps = read_fps(args.video)
-    peak_frame, peak_count = find_peak_from_counts(args.counts)
-    t_peak = frame_to_seconds(peak_frame, fps, args.vid_stride)
+    res = run_snapshot_peak(
+        video=args.video,
+        counts_csv=args.counts,
+        vid_stride=args.vid_stride,
+        out=args.out,
+        model=args.model,
+        conf=args.conf,
+        imgsz=args.imgsz,
+        window=args.window
+    )
 
-    # Ako želimo „fino” traženje oko peaka
-    candidates = [t_peak]
-    if args.window > 0:
-        step = max(1.0 / fps, 0.2)  # ~5 fps ili finije
-        t = args.window
-        sweep = [t_peak + dt for dt in
-                 [x * step for x in range(int(-t/step), int(t/step) + 1)]]
-        candidates = sorted(set([round(x, 2) for x in sweep]))
-
-    best_img, best_n = None, -1
-    for t in candidates:
-        frame = grab_frame_at_time(args.video, t)
-        img, res = detect_and_draw(args.model, frame, conf=args.conf, imgsz=args.imgsz)
-        persons = 0
-        if res.boxes is not None:
-            persons = len(res.boxes)
-        if persons > best_n:
-            best_n = persons
-            best_img = img.copy()
-
-    if best_img is None:
-        # fallback: makar snimi „sirovi” frame na t_peak
-        best_img = grab_frame_at_time(args.video, t_peak)
-
-    Path(os.path.dirname(args.out) or ".").mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(args.out, best_img)
-    print(f"[OK] Sačuvano: {args.out}")
-    print(f"  Peak iz counts.csv: frame={peak_frame}, count_now={peak_count}, t≈{t_peak:.2f}s")
-    print(f"  Pronađeno osoba na najboljem kadru: {best_n}")
+    print(f"[OK] Sačuvano: {res['out']}")
+    print(f"  Peak iz counts.csv: frame={res['peak']['frame']}, count_now={res['peak']['count']}, t≈{res['peak']['t_sec']:.2f}s")
+    print(f"  Pronađeno osoba na najboljem kadru: {res['best_count']}")
 
 if __name__ == "__main__":
     main()

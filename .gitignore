@@ -1,40 +1,55 @@
-# Python cache & venv
+# ---------- Python ----------
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pkl
-*.npy
-*.npz
+*.py[cod]
+*.pt
 .venv/
 venv/
 env/
 
-# Build / dist
+# ---------- Node / Next ----------
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/.vercel/
+frontend/.env.local
+
+# ---------- Build / Dist / Coverage ----------
 build/
 dist/
-*.egg-info/
+coverage/
+.coverage
+.pytest_cache/
 
-# IDE/editor
+# ---------- IDE / OS ----------
 .vscode/
 .idea/
 *.swp
-
-# OS
 .DS_Store
 Thumbs.db
 
-# ML outputs / results
-outputs/
-*.jpg
-*.png
-*.csv
-*.mp4
-
-# Local configs / secrets
+# ---------- Local configs / secrets ----------
 .env
+.env.*
 *.log
 
-# Node/Frontend
-frontend/node_modules/
-frontend/.next/
+# ---------- Backend outputs (artefakti) ----------
+files/
+outputs/
+results/
+backend/files/
+backend/outputs/
+backend/results/
+
+# ---------- VIDEOS (globalno ignoriši) ----------
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.avi
+*.mpeg
+*.mpg
+*.m4v
+*.ts
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
