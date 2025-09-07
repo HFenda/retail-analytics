@@ -5,3 +5,6 @@ ultralytics
 opencv-python
 numpy
 scipy
+pydantic
+opencv-python-headless
+gunicorn

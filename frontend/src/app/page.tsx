@@ -37,7 +37,7 @@ export default function Home() {
   const [show, setShow] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "heatmap" | "files">("overview");
 
-  const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
   const absUrl = (u?: string) => (!u ? "" : u.startsWith("/files/") ? `${API}${u}` : u);
 
   // Upload handlers
