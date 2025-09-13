@@ -1,0 +1,70 @@
+name: CI Worker
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ["worker/**", "ml/**", ".github/workflows/ci-worker.yml"]
+  pull_request:
+    paths: ["worker/**", "ml/**"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('worker/requirements.txt', 'ml/**') }}
+
+      - name: Install deps
+        run: pip install -r worker/requirements.txt
+
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check worker ml || true
+
+      - name: Lightweight tests
+        run: |
+          pip install pytest
+          cd worker
+          pytest -q || true  # skini "|| true" kad dodaš 2-3 testa
+
+      - name: Compute lowercase repo for GHCR
+        shell: bash
+        run: echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: |
+          docker build -f worker/Dockerfile -t ghcr.io/${{ env.REPO_LC }}/worker:${{ github.sha }} .
+
+      - name: Login GHCR
+        if: ${{ github.event_name != 'pull_request' && !env.ACT }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: ${{ github.event_name != 'pull_request' && !env.ACT }}
+        run: |
+          docker tag ghcr.io/${{ env.REPO_LC }}/worker:${{ github.sha }} ghcr.io/${{ env.REPO_LC }}/worker:latest
+          docker push ghcr.io/${{ env.REPO_LC }}/worker:${{ github.sha }}
+          docker push ghcr.io/${{ env.REPO_LC }}/worker:latest
