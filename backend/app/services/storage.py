@@ -1,15 +1,19 @@
-# backend/app/services/storage.py
 from pathlib import Path
+
 from fastapi import UploadFile
-import shutil, uuid
+
+import shutil
+import uuid
 
 # project root: .../retail-analytics
 ROOT = Path(__file__).resolve().parents[3]
 BASE = ROOT / "storage"
 
-def ensure_dirs():
+
+def ensure_dirs() -> None:
     (BASE / "uploads").mkdir(parents=True, exist_ok=True)
     (BASE / "results").mkdir(parents=True, exist_ok=True)
+
 
 def save_upload(file: UploadFile) -> str:
     ensure_dirs()
@@ -19,6 +23,7 @@ def save_upload(file: UploadFile) -> str:
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return str(dest)
+
 
 def job_dir(job_id: str) -> str:
     ensure_dirs()
