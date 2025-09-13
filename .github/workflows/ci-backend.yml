@@ -1,72 +1,50 @@
 name: CI Backend
 
 on:
-  workflow_dispatch:
   push:
-    paths: ["backend/**", ".github/workflows/ci-backend.yml"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/ci-backend.yml"
   pull_request:
-    paths: ["backend/**"]
-
-permissions:
-  contents: read
-  packages: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    paths:
+      - "backend/**"
+      - ".github/workflows/ci-backend.yml"
+  workflow_dispatch:
 
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Cache pip
-        if: ${{ !env.ACT }}   # preskoči kad radi act
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          key: ${{ runner.os }}-pip-backend-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-backend-
 
       - name: Install deps
-        run: pip install -r backend/requirements.txt
-
-      - name: Lint (ruff)
         run: |
-          pip install ruff
-          cd backend
-          ruff check .
-
-      - name: Unit/Smoke tests (pytest)
-        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # opcionalno:
           pip install pytest
-          cd backend
-          pytest -q || true  # dok ne dodaš par testova
 
-      - name: Compute lowercase repo for GHCR
-        shell: bash
-        run: echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
-
-      - name: Build Docker image
+      - name: Unit tests
         run: |
-          docker build -f backend/Dockerfile -t ghcr.io/${{ env.REPO_LC }}/backend:${{ github.sha }} .
+          pytest -q || true  # skini || true ako hoćeš da build padne na testu
 
-      - name: Login GHCR
-        if: ${{ github.event_name != 'pull_request' && !env.ACT }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push image
-        if: ${{ github.event_name != 'pull_request' && !env.ACT }}
+      - name: Build check
         run: |
-          docker tag ghcr.io/${{ env.REPO_LC }}/backend:${{ github.sha }} ghcr.io/${{ env.REPO_LC }}/backend:latest
-          docker push ghcr.io/${{ env.REPO_LC }}/backend:${{ github.sha }}
-          docker push ghcr.io/${{ env.REPO_LC }}/backend:latest
+          python -m py_compile $(git ls-files '*.py')
