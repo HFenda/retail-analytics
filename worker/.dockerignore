@@ -5,6 +5,9 @@ __pycache__/
 *.avi
 *.mov
 .env
+.git
+.gitignore
+/data
 storage/
 outputs/
 results/

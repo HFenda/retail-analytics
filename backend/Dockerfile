@@ -10,10 +10,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt /app/
-RUN pip install -r requirements.txt
+# instalacije ostaju kako jesu
+COPY backend/requirements.txt /app/
+RUN pip install -r /app/requirements.txt
 
-COPY . /app
+# kopiraj backend kod
+COPY backend /app
+
+# KOPIRAJ I ML PAKET
+COPY ml /app/ml
+
+# osiguraj da je /app na sys.path
+ENV PYTHONPATH=/app
 
 EXPOSE 8000
 CMD ["gunicorn","-k","uvicorn.workers.UvicornWorker","app.main:app","--bind","0.0.0.0:8000","--workers","2","--timeout","120"]

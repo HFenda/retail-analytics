@@ -1,6 +1,8 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
     container_name: ra-backend
     ports:
       - "8000:8000"
@@ -8,14 +10,19 @@ services:
       - ./backend/.env
     environment:
       - YOLO_MODEL_REF=yolov8n.pt
+      - PYTHONPATH=/app
     volumes:
       - ./backend:/app
-      - ./data:/data        # zajednički storage mount
+      - ./ml:/app/ml
+      - data_shared:/data
+    # za dev: hot reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 10s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   frontend:
     build:
@@ -23,15 +30,25 @@ services:
       args:
         - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
     container_name: ra-frontend
+    working_dir: /app
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000   # nije presudno za prod build, ali ostavi
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
     volumes:
       - ./frontend:/app
+      # spriječi da host pregazi node_modules unutar kontejnera
+      - node_modules_cache:/app/node_modules
+    command: npm run dev
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   worker:
     build: ./worker
@@ -45,7 +62,12 @@ services:
       - YOLO_MODEL_REF=yolov8n.pt
     volumes:
       - ./worker:/worker
-      - ./data:/data        # isti volumen da worker vidi uploadane fajlove
+      - data_shared:/data
     depends_on:
       backend:
         condition: service_started
+    restart: unless-stopped
+
+volumes:
+  node_modules_cache:
+  data_shared:
