@@ -1,0 +1,50 @@
+name: CI Images
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/hfenda/retail-analytics/backend:${{ github.sha }}
+            ghcr.io/hfenda/retail-analytics/backend:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          file: ./worker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/hfenda/retail-analytics/worker:${{ github.sha }}
+            ghcr.io/hfenda/retail-analytics/worker:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
