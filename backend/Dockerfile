@@ -1,8 +1,5 @@
+# backend/Dockerfile
 FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ffmpeg libglib2.0-0 libsm6 libxext6 libxrender-dev curl \
@@ -10,10 +7,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt /app/
-RUN pip install -r requirements.txt
+# Kontekst je REPO ROOT, pa putanje imaju prefix backend/
+COPY backend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY . /app
+# Kopiraj backend kod i ML modul
+COPY backend /app
+COPY ml /ml
 
-EXPOSE 8000
-CMD ["gunicorn","-k","uvicorn.workers.UvicornWorker","app.main:app","--bind","0.0.0.0:8000","--workers","2","--timeout","120"]
+# Omogući import "ml" i "app"
+ENV PYTHONPATH="/app:/ml:${PYTHONPATH}"
+
+# Pokreni kao i do sada
+CMD ["gunicorn","-k","uvicorn.workers.UvicornWorker","-w","2","-b","0.0.0.0:8000","app.main:app"]
