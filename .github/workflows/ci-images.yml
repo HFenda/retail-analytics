@@ -29,7 +29,7 @@ jobs:
       - name: Build & Push backend
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
+          context: .               # <- ključno: root kontekst
           file: ./backend/Dockerfile
           push: true
           tags: |
@@ -58,7 +58,7 @@ jobs:
       - name: Build & Push worker
         uses: docker/build-push-action@v6
         with:
-          context: ./worker
+          context: .               # <- i ovdje root kontekst
           file: ./worker/Dockerfile
           push: true
           tags: |
