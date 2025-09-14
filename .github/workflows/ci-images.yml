@@ -29,7 +29,7 @@ jobs:
       - name: Build & Push backend
         uses: docker/build-push-action@v6
         with:
-          context: .               # <- ključno: root kontekst
+          context: .               # backend treba root zbog COPY backend/ i ml/
           file: ./backend/Dockerfile
           push: true
           tags: |
@@ -58,7 +58,7 @@ jobs:
       - name: Build & Push worker
         uses: docker/build-push-action@v6
         with:
-          context: .               # <- i ovdje root kontekst
+          context: ./worker        # ← ključno: worker build vidi svoj requirements.txt i ./
           file: ./worker/Dockerfile
           push: true
           tags: |
