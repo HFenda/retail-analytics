@@ -1,7 +1,6 @@
 services:
   backend:
     image: ghcr.io/hfenda/retail-analytics/backend:${IMAGE_TAG:-main}
-    pull_policy: always
     container_name: ra-backend
     ports:
       - "8000:8000"
@@ -13,12 +12,24 @@ services:
     volumes:
       - ./data:/data
       - ./ml:/ml:ro
+    command:
+      - gunicorn
+      - -k
+      - uvicorn.workers.UvicornWorker
+      - app.main:app
+      - --workers
+      - "2"
+      - --timeout
+      - "3600"
+      - --bind
+      - 0.0.0.0:8000
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/openapi.json"]
       interval: 10s
       timeout: 3s
       retries: 10
       start_period: 10s
+    restart: unless-stopped
 
   frontend:
     build:
@@ -30,8 +41,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-    volumes:
-      - ./frontend:/app
+    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy

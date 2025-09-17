@@ -24,7 +24,6 @@ type Result = {
   peak: number;
 };
 
-// Utility: classNames merge
 function cn(...cls: (string | false | null | undefined)[]) {
   return cls.filter(Boolean).join(" ");
 }

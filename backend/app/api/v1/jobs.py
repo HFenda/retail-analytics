@@ -1,49 +1,70 @@
-# backend/app/api/v1/jobs.py
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
+from uuid import uuid4
 from pathlib import Path
-
-from app.services.storage import save_upload, job_dir
-from app.services.processor import run_pipeline, new_job_id
+import os, shutil, json
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
-# project root: .../retail-analytics
-ROOT = Path(__file__).resolve().parents[4]
-STORAGE = ROOT / "storage"
+DATA_ROOT = Path("/data")
+UPLOADS_DIR = DATA_ROOT / "uploads"
+RESULTS_DIR = DATA_ROOT / "results"
 
-def to_url(p: str) -> str:
-    abs_p = Path(p).resolve()
-    rel = abs_p.relative_to(STORAGE)  # pukne ako nije ispod storage/
+def to_url(abs_path: str) -> str:
+    p = Path(abs_path).resolve()
+    rel = p.relative_to(DATA_ROOT) 
     return "/files/" + rel.as_posix()
 
+def enqueue_job(video_path: str, vid_stride: int) -> str:
+    """
+    Najjednostavniji 'queue':
+    napravi job dir i status.json koje worker može da pokupi.
+    Pravi queue (Redis, RQ, Celery) je bolje.
+    """
+    job_id = str(uuid4())
+    job_dir = RESULTS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "request.json").write_text(json.dumps({
+        "job_id": job_id,
+        "video_path": video_path,
+        "vid_stride": vid_stride
+    }, ensure_ascii=False, indent=2))
+    (job_dir / "status.json").write_text(json.dumps({"status": "queued"}))
+    return job_id
+
 @router.post("/analyze")
-async def analyze(file: UploadFile = File(...), vid_stride: int = 6):
+async def analyze(
+    file: UploadFile = File(...),
+    vid_stride: int = Form(6)    
+):
     try:
-        video_path = save_upload(file)
-        jid = new_job_id()
-        workdir = job_dir(jid)
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{uuid4()}_{file.filename}"
+        dst_path = UPLOADS_DIR / safe_name
 
-        res = run_pipeline(video_path, workdir, vid_stride=vid_stride)
+        with open(dst_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
 
-        out = {
-            "job_id": res["job_id"],
-            "video": to_url(res["video"]),
-            "counts_csv": to_url(res["counts"]["csv"]),
-            "unique_total": res["counts"]["unique_total"],
-            "peak": res["counts"]["peak"],
-            "per_sec_csv": to_url(res["analysis"]["files"]["per_sec"]),
-            "by_min_csv":  to_url(res["analysis"]["files"]["by_minute"]),
-            "peaks_csv":   to_url(res["analysis"]["files"]["peaks"]),
-            "heatmap": {
-                "overlay": to_url(res["heatmap"]["artifacts"]["overlay"]),
-                "colored": to_url(res["heatmap"]["artifacts"]["colored"]),
-                "gray":    to_url(res["heatmap"]["artifacts"]["gray"]),
-                "transparent_png": to_url(res["heatmap"]["artifacts"]["transparent_png"]),
-                "preview": to_url(res["heatmap"]["artifacts"]["preview"]),
-            },
-            "snapshot": to_url(res["snapshot"]["out"]),
-        }
-        return JSONResponse(out)
+        job_id = enqueue_job(str(dst_path), vid_stride)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id": job_id,
+                "video": to_url(str(dst_path)),
+                "status_url": f"/api/v1/jobs/{job_id}",
+                "results_url": f"/files/results/{job_id}/"
+            }
+        )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    status_file = RESULTS_DIR / job_id / "status.json"
+    if not status_file.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    return json.loads(status_file.read_text())
