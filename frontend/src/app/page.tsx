@@ -1,7 +1,12 @@
 "use client";
+export const dynamic = 'force-dynamic';
+
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, FileVideo, CheckCircle2, X, Loader2, Download, Image as ImageIcon, AlertTriangle, ChartBar, Flame, Link as LinkIcon } from "lucide-react";
+import {
+  Upload, FileVideo, CheckCircle2, X, Loader2, Download,
+  Image as ImageIcon, AlertTriangle, ChartBar, Flame, Link as LinkIcon
+} from "lucide-react";
 
 // -------------------- Types --------------------
 type HeatmapFiles = {
@@ -24,25 +29,35 @@ type Result = {
   peak: number;
 };
 
+type JobQueued = {
+  job_id: string;
+  status_url: string;
+  results_url?: string;
+};
+
 function cn(...cls: (string | false | null | undefined)[]) {
   return cls.filter(Boolean).join(" ");
 }
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);         // upload-in-progress
+  const [isPolling, setIsPolling] = useState(false);     // job-processing
   const [res, setRes] = useState<Result | null>(null);
+  const [job, setJob] = useState<JobQueued | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [show, setShow] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "heatmap" | "files">("overview");
 
-const API =
-  process.env.NEXT_PUBLIC_API_BASE_URL ??
-  (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
-if (!API && process.env.NODE_ENV === "production") {
-  throw new Error("NEXT_PUBLIC_API_BASE_URL is not set");
-}
-  const absUrl = (u?: string) => (!u ? "" : u.startsWith("/files/") ? `${API}${u}` : u);
+  const API =
+    process.env.NEXT_PUBLIC_API_BASE_URL ??
+    (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
+  if (!API && process.env.NODE_ENV === "production") {
+    throw new Error("NEXT_PUBLIC_API_BASE_URL is not set");
+  }
+
+  // Prefixaj apsolutno sve što nije već http(s)
+  const absUrl = (u?: string) => (!u ? "" : /^https?:\/\//i.test(u) ? u : `${API}${u}`);
 
   // Upload handlers
   const onDrop = (e: React.DragEvent<HTMLLabelElement>) => {
@@ -58,7 +73,11 @@ if (!API && process.env.NODE_ENV === "production") {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!file) { setError("Select a video file."); return; }
-    setError(null); setLoading(true); setRes(null);
+    setError(null);
+    setLoading(true);
+    setRes(null);
+    setJob(null);
+    setShow(false);
 
     const form = new FormData();
     form.append("file", file);
@@ -67,8 +86,26 @@ if (!API && process.env.NODE_ENV === "production") {
     try {
       const r = await fetch(`${API}/api/v1/analyze`, { method: "POST", body: form });
       if (!r.ok) throw new Error(await r.text());
-      const data: Result = await r.json();
-      setRes(data); setShow(true); setActiveTab("overview");
+      const data = await r.json();
+
+      // Ako je queue odgovor (202 + status_url), pokreni polling
+      if (r.status === 202 || data?.status_url) {
+        const j: JobQueued = {
+          job_id: data.job_id,
+          status_url: data.status_url,
+          results_url: data.results_url,
+        };
+        setJob(j);
+        setShow(true);
+        setActiveTab("overview");
+        // Poll u pozadini
+        pollJob(j);
+      } else {
+        // Inače smatramo da smo već dobili finalni rezultat
+        setRes(data as Result);
+        setShow(true);
+        setActiveTab("overview");
+      }
     } catch (err: any) {
       setError(err?.message || "Server error.");
     } finally {
@@ -76,7 +113,7 @@ if (!API && process.env.NODE_ENV === "production") {
     }
   }
 
-  // Fake progress while loading
+  // Fake progress dok traje upload
   const [progress, setProgress] = useState(0);
   useEffect(() => {
     if (!loading) { setProgress(0); return; }
@@ -84,6 +121,53 @@ if (!API && process.env.NODE_ENV === "production") {
     const id = setInterval(() => setProgress(p => (p < 92 ? p + Math.random() * 7 : p)), 350);
     return () => clearInterval(id);
   }, [loading]);
+
+  // Polling
+  async function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+
+  async function pollJob(j: JobQueued) {
+    setIsPolling(true);
+    const maxAttempts = 300; // ~15 min na 3s interval
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const r = await fetch(absUrl(j.status_url), { cache: "no-store" });
+        if (r.ok) {
+          const s = await r.json();
+
+          // Ako status endpoint već vraća kompletan rezultat
+          if (s?.heatmap || s?.snapshot || s?.counts_csv) {
+            setRes(s as Result);
+            setJob(null);
+            setIsPolling(false);
+            return;
+          }
+
+          // Ako javlja da je gotovo, pokušaj pokupiti agregirani JSON iz results_url (razni nazivi)
+          const resUrl = s?.results_url || j.results_url;
+          if ((s?.status === "done" || s?.done === true || s?.state === "completed") && resUrl) {
+            const candidates = ["result.json", "index.json", "final.json"];
+            for (const name of candidates) {
+              try {
+                const rr = await fetch(absUrl(`${resUrl}${resUrl.endsWith("/") ? "" : "/"}${name}`), { cache: "no-store" });
+                if (rr.ok) {
+                  const final = await rr.json();
+                  setRes(final as Result);
+                  setJob(null);
+                  setIsPolling(false);
+                  return;
+                }
+              } catch { /* try next */ }
+            }
+            // Ako nema agregata, ostavi da nastavi pokušavati još malo
+          }
+        }
+      } catch { /* try again */ }
+
+      await sleep(3000);
+    }
+    setError("Processing took too long. Try a smaller video.");
+    setIsPolling(false);
+  }
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-neutral-950 to-neutral-900 text-neutral-100">
@@ -149,12 +233,17 @@ if (!API && process.env.NODE_ENV === "production") {
                       <Flame className="mr-2 h-4 w-4" />
                     )}
                   </AnimatePresence>
-                  {loading ? "Analyzing…" : "Run analysis"}
+                  {loading ? "Uploading…" : "Run analysis"}
                 </button>
-                {error && (
-                  <div className="flex items-center gap-2 text-red-300">
-                    <AlertTriangle className="h-4 w-4" />
-                    <span className="text-sm">{error}</span>
+                {(error || isPolling) && (
+                  <div className="flex items-center gap-2">
+                    {isPolling && <Loader2 className="h-4 w-4 animate-spin text-white/70" />}
+                    {error && (
+                      <div className="flex items-center gap-2 text-red-300">
+                        <AlertTriangle className="h-4 w-4" />
+                        <span className="text-sm">{error}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -164,8 +253,11 @@ if (!API && process.env.NODE_ENV === "production") {
                   <div className="h-2 w-full overflow-hidden rounded bg-white/10">
                     <div className="h-full bg-white" style={{ width: `${Math.min(100, Math.round(progress))}%` }} />
                   </div>
-                  <p className="text-xs text-neutral-400">Processing frames, people, heatmap…</p>
+                  <p className="text-xs text-neutral-400">Uploading video…</p>
                 </div>
+              )}
+              {!loading && isPolling && (
+                <p className="text-xs text-neutral-400">Processing on server…</p>
               )}
             </form>
           </div>
@@ -182,9 +274,9 @@ if (!API && process.env.NODE_ENV === "production") {
           </div>
         </section>
 
-        {/* Results Modal (custom, bez shadcn/ui) */}
+        {/* Results Modal */}
         <AnimatePresence>
-          {show && res && (
+          {show && (res || job) && (
             <div className="fixed inset-0 z-50">
               <div className="absolute inset-0 bg-black/60" onClick={() => setShow(false)} />
               <motion.div
@@ -196,12 +288,28 @@ if (!API && process.env.NODE_ENV === "production") {
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-lg font-semibold">Analysis results</h3>
-                    <p className="text-sm text-neutral-400">People counting, peak snapshot and heatmap.</p>
+                  <div className="flex items-center gap-3">
+                    <div>
+                      <h3 className="text-lg font-semibold">Analysis results</h3>
+                      <p className="text-sm text-neutral-400">People counting, peak snapshot and heatmap.</p>
+                    </div>
+                    {job && (
+                      <span className="rounded bg-white/10 px-2 py-1 text-xs">
+                        Job: {job.job_id} • {isPolling ? "processing…" : "queued"}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {res.job_id && <span className="rounded bg-white/10 px-2 py-1 text-xs">Job: {res.job_id}</span>}
+                    {job?.status_url && (
+                      <a
+                        href={absUrl(job.status_url)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs underline text-neutral-300"
+                      >
+                        View status JSON
+                      </a>
+                    )}
                     <button onClick={() => setShow(false)} className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10">
                       <X className="mr-1 h-4 w-4" /> Close
                     </button>
@@ -210,10 +318,10 @@ if (!API && process.env.NODE_ENV === "production") {
 
                 {/* KPIs */}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <KPI label="Unique total" value={res.unique_total} />
-                  <KPI label="Peak" value={res.peak} />
-                  <KPI label="CSV files" value={4} />
-                  <KPI label="Heatmap variants" value={3} />
+                  <KPI label="Unique total" value={res?.unique_total ?? "—"} />
+                  <KPI label="Peak" value={res?.peak ?? "—"} />
+                  <KPI label="CSV files" value={res ? 4 : "—"} />
+                  <KPI label="Heatmap variants" value={res ? 3 : "—"} />
                 </div>
 
                 {/* Tabs */}
@@ -232,37 +340,47 @@ if (!API && process.env.NODE_ENV === "production") {
 
                   {activeTab === "overview" && (
                     <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <Panel title="Peak snapshot" href={absUrl(res.snapshot)}>
-                        <ResponsiveImg src={absUrl(res.snapshot)} alt="snapshot" />
+                      <Panel title="Peak snapshot" href={res?.snapshot ? absUrl(res.snapshot) : undefined}>
+                        {res?.snapshot
+                          ? <ResponsiveImg src={absUrl(res.snapshot)} alt="snapshot" />
+                          : <p className="text-sm text-neutral-400">Processing…</p>}
                       </Panel>
-                      <Panel title="Heatmap preview" href={absUrl(res.heatmap.preview)}>
-                        <ResponsiveImg src={absUrl(res.heatmap.preview)} alt="heatmap" />
+                      <Panel title="Heatmap preview" href={res?.heatmap?.preview ? absUrl(res.heatmap.preview) : undefined}>
+                        {res?.heatmap?.preview
+                          ? <ResponsiveImg src={absUrl(res.heatmap.preview)} alt="heatmap" />
+                          : <p className="text-sm text-neutral-400">Processing…</p>}
                       </Panel>
                     </div>
                   )}
 
                   {activeTab === "heatmap" && (
                     <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                      <Panel title="Overlay" href={absUrl(res.heatmap.overlay)}>
-                        <ResponsiveImg src={absUrl(res.heatmap.overlay)} alt="overlay" />
+                      <Panel title="Overlay" href={res?.heatmap?.overlay ? absUrl(res.heatmap.overlay) : undefined}>
+                        {res?.heatmap?.overlay
+                          ? <ResponsiveImg src={absUrl(res.heatmap.overlay)} alt="overlay" />
+                          : <p className="text-sm text-neutral-400">Processing…</p>}
                       </Panel>
-                      <Panel title="Transparent PNG" href={absUrl(res.heatmap.transparent_png)}>
-                        <ResponsiveImg src={absUrl(res.heatmap.transparent_png)} alt="transparent" />
+                      <Panel title="Transparent PNG" href={res?.heatmap?.transparent_png ? absUrl(res.heatmap.transparent_png) : undefined}>
+                        {res?.heatmap?.transparent_png
+                          ? <ResponsiveImg src={absUrl(res.heatmap.transparent_png)} alt="transparent" />
+                          : <p className="text-sm text-neutral-400">Processing…</p>}
                       </Panel>
-                      <Panel title="Gray/Colored" href={absUrl(res.heatmap.colored || res.heatmap.gray)}>
-                        <ResponsiveImg src={absUrl(res.heatmap.colored || res.heatmap.gray)} alt="variant" />
+                      <Panel title="Gray/Colored" href={(res?.heatmap?.colored || res?.heatmap?.gray) ? absUrl(res.heatmap.colored || res.heatmap.gray) : undefined}>
+                        {(res?.heatmap?.colored || res?.heatmap?.gray)
+                          ? <ResponsiveImg src={absUrl(res.heatmap.colored || res.heatmap.gray)} alt="variant" />
+                          : <p className="text-sm text-neutral-400">Processing…</p>}
                       </Panel>
                     </div>
                   )}
 
                   {activeTab === "files" && (
                     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <FileLink label="counts.csv" href={absUrl(res.counts_csv)} />
-                      <FileLink label="occupancy_per_sec.csv" href={absUrl(res.per_sec_csv)} />
-                      <FileLink label="by_minute.csv" href={absUrl(res.by_min_csv)} />
-                      <FileLink label="peaks.csv" href={absUrl(res.peaks_csv)} />
-                      <FileLink label="heatmap_overlay.png" href={absUrl(res.heatmap.overlay)} />
-                      <FileLink label="heatmap_transparent.png" href={absUrl(res.heatmap.transparent_png)} />
+                      <FileLink label="counts.csv" href={res?.counts_csv ? absUrl(res.counts_csv) : undefined} />
+                      <FileLink label="occupancy_per_sec.csv" href={res?.per_sec_csv ? absUrl(res.per_sec_csv) : undefined} />
+                      <FileLink label="by_minute.csv" href={res?.by_min_csv ? absUrl(res.by_min_csv) : undefined} />
+                      <FileLink label="peaks.csv" href={res?.peaks_csv ? absUrl(res.peaks_csv) : undefined} />
+                      <FileLink label="heatmap_overlay.png" href={res?.heatmap?.overlay ? absUrl(res.heatmap.overlay) : undefined} />
+                      <FileLink label="heatmap_transparent.png" href={res?.heatmap?.transparent_png ? absUrl(res.heatmap.transparent_png) : undefined} />
                     </div>
                   )}
                 </div>
