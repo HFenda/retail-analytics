@@ -1,6 +1,8 @@
+version: "3.9"
+
 services:
   backend:
-    image: ghcr.io/hfenda/retail-analytics/backend:${IMAGE_TAG:-main}
+    image: ghcr.io/hfenda/retail-analytics/backend@sha256:36eab25f5c27b63497f778e628ea887e6b784694ce1e63d07a56ab7eb2f8d3f1
     container_name: ra-backend
     ports:
       - "8000:8000"
@@ -12,17 +14,6 @@ services:
     volumes:
       - ./data:/data
       - ./ml:/ml:ro
-    command:
-      - gunicorn
-      - -k
-      - uvicorn.workers.UvicornWorker
-      - app.main:app
-      - --workers
-      - "2"
-      - --timeout
-      - "3600"
-      - --bind
-      - 0.0.0.0:8000
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/openapi.json"]
       interval: 10s
@@ -30,25 +21,11 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
-
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-    container_name: ra-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-    restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_healthy
+    # NAPOMENA: nema 'command:' ovdje da ne pregazi CMD iz Dockerfile-a
+    # Za Heroku ionako ne koristimo compose, nego njihov container stack
 
   worker:
-    image: ghcr.io/hfenda/retail-analytics/worker:${IMAGE_TAG:-main}
-    pull_policy: always
+    image: ghcr.io/hfenda/retail-analytics/worker@sha256:952e2293626b786d8406fda8cd7d79bc6d9ccfb9cda7e6c829d576495f29e07a
     container_name: ra-worker
     environment:
       - BACKEND_URL=http://backend:8000
@@ -62,3 +39,20 @@ services:
     depends_on:
       backend:
         condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    # Front ostavljamo da se gradi lokalno; na produkciji će biti na Vercelu.
+    build:
+      context: ./frontend
+      args:
+        - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    container_name: ra-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
