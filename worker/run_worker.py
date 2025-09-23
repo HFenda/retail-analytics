@@ -8,7 +8,6 @@ from pathlib import Path
 
 import requests
 
-# ============ Config iz ENV-a ============
 BACKEND_URL   = os.getenv("BACKEND_URL", "http://backend:8000")
 UPLOADS_DIR   = Path(os.getenv("UPLOADS_DIR", "/data/uploads"))
 RESULTS_DIR   = Path(os.getenv("RESULTS_DIR", "/data/results"))
@@ -17,20 +16,16 @@ FAILED_DIR    = Path(os.getenv("FAILED_DIR", "/data/failed"))
 POLL_SECONDS  = int(os.getenv("POLL_SECONDS", "3"))
 RETRY_MAX     = int(os.getenv("RETRY_MAX", "3"))
 
-# Ako backend treba model ref, šalje se kao form field
 YOLO_MODEL_REF = os.getenv("YOLO_MODEL_REF", "yolov8n.pt")
 
-# Ekstenzije koje pratimo
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".mpeg", ".mpg", ".webm", ".m4v", ".ts"}
 
-# ============ Logging ============
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [worker] %(levelname)s: %(message)s"
 )
 log = logging.getLogger("worker")
 
-# ============ Helpers ============
 def ensure_dirs():
     for d in (UPLOADS_DIR, RESULTS_DIR, PROCESSED_DIR, FAILED_DIR):
         d.mkdir(parents=True, exist_ok=True)
@@ -89,7 +84,6 @@ def mark_status(out_dir: Path, status: str, extra: dict | None = None):
 def move_safe(src: Path, dst_dir: Path):
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src.name
-    # ako već postoji isto ime, dodaj sufiks
     if dst.exists():
         stem = src.stem
         suffix = src.suffix
@@ -97,7 +91,6 @@ def move_safe(src: Path, dst_dir: Path):
     shutil.move(str(src), str(dst))
     return dst
 
-# ============ Main loop ============
 def main():
     log.info("Worker startuje. Uploads=%s  Results=%s  Backend=%s", UPLOADS_DIR, RESULTS_DIR, BACKEND_URL)
     ensure_dirs()
@@ -142,7 +135,6 @@ def main():
                 release_file(video)
 
         except Exception as loop_err:
-            # globalni guard da petlja ne umre
             log.error("Global error u loopu: %s", loop_err)
             time.sleep(2)
 
