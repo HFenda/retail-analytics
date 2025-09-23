@@ -10,7 +10,6 @@ WORKDIR /app
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Worker deps (ako postoji poseban requirements; u suprotnom ostaje prazan)
 COPY worker/requirements.txt /tmp/worker-req.txt
 RUN pip install --no-cache-dir -r /tmp/worker-req.txt || true
 
