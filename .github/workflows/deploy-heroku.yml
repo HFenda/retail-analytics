@@ -1,0 +1,40 @@
+name: Deploy to Heroku
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login Heroku Registry
+        run: echo "${{ secrets.HEROKU_API_KEY }}" | docker login -u _ --password-stdin registry.heroku.com
+      - name: Build & Push backend image
+        run: |
+          docker build -f backend/Dockerfile -t registry.heroku.com/ra-backend-deploy/web .
+          docker push registry.heroku.com/ra-backend-deploy/web
+      - name: Release backend
+        run: |
+          curl https://cli-assets.heroku.com/install.sh | sh
+          heroku container:release web -a ra-backend-deploy
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+
+  worker:
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login Heroku Registry
+        run: echo "${{ secrets.HEROKU_API_KEY }}" | docker login -u _ --password-stdin registry.heroku.com
+      - name: Build & Push worker image
+        run: |
+          docker build -f worker/Dockerfile -t registry.heroku.com/ra-worker/worker ./worker
+          docker push registry.heroku.com/ra-worker/worker
+      - name: Release worker
+        run: |
+          curl https://cli-assets.heroku.com/install.sh | sh
+          heroku container:release worker -a ra-worker
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
