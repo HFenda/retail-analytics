@@ -11,7 +11,6 @@ except Exception:
 from ultralytics import YOLO
 
 
-# ---------------- helpers ----------------
 
 def read_metadata(cap):
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -51,7 +50,6 @@ def _progress_done():
     print()
 
 
-# -------------- background ----------------
 
 def compute_background(video_path, sample_step=30, resize_w=None, mode="median", show_progress=True):
     cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
@@ -120,7 +118,6 @@ def compute_background(video_path, sample_step=30, resize_w=None, mode="median",
     return bg
 
 
-# -------------- accumulation ----------------
 
 def accumulate_heat(video_path, model, stride=2, conf=0.4, resize_w=960, radius=10,
                     mode="balanced", detect_every=5, show_progress=True,
@@ -198,7 +195,6 @@ def accumulate_heat(video_path, model, stride=2, conf=0.4, resize_w=960, radius=
                 weight_sum += 0.8
 
             if mode in ("balanced", "fast"):
-                # Stabilniji foreground: stroži threshold + morfologija + veći min_area
                 fg = mog.apply(frame, learningRate=0.003)
                 _, fg = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
                 k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
@@ -234,7 +230,6 @@ def accumulate_heat(video_path, model, stride=2, conf=0.4, resize_w=960, radius=
         "mode": mode,
     }
 
-    # Zaglađivanje (na sirovom "heat")
     if SCIPY:
         heat = gaussian_filter(heat, sigma=radius*0.8)
     else:
@@ -244,7 +239,6 @@ def accumulate_heat(video_path, model, stride=2, conf=0.4, resize_w=960, radius=
     return heat, stats
 
 
-# -------------- overlay & export ----------------
 
 def overlay_heat_on_bg(bg_bgr, heat_norm, alpha=0.65, thr=0.05,
                        colormap=cv2.COLORMAP_TURBO, color_gain=0.7):
@@ -449,7 +443,6 @@ def run_people_heatmap(
     }
 
 
-# -------------- main ----------------
 
 def main():
     ap = argparse.ArgumentParser()
@@ -492,7 +485,6 @@ def main():
     ap.add_argument("--ref_alpha_boost", type=float, default=1.0,
                     help="Skaliranje prozirnosti heatmap_transparent pri slaganju na HQ sliku (0.5=prozirnije, 2.0=jače)")
 
-    # MOG2 i filtriranje šuma
     ap.add_argument("--min_area", type=int, default=300,
                     help="Minimalna površina konture iz MOG2 da bi se računala (px).")
     ap.add_argument("--mog_history", type=int, default=400,

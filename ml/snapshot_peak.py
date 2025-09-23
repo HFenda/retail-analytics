@@ -14,7 +14,6 @@ def read_fps(video_path: str) -> float:
     return float(fps)
 
 def find_peak_from_counts(counts_csv: str):
-    # očekuje kolone: frame_idx,count_now,unique_total
     peak_frame, peak_count = None, -1
     with open(counts_csv, newline='', encoding='utf-8') as f:
         r = csv.DictReader(f)
@@ -28,7 +27,6 @@ def find_peak_from_counts(counts_csv: str):
     return peak_frame, peak_count
 
 def frame_to_seconds(frame_idx: int, fps: float, stride: int) -> float:
-    # frame_idx je broj "procesiranog" frame-a (poslije stride-a)
     return (frame_idx * stride) / fps
 
 def grab_frame_at_time(video_path: str, t_seconds: float):
@@ -46,9 +44,7 @@ def grab_frame_at_time(video_path: str, t_seconds: float):
 
 def detect_and_draw(model_path: str, frame, conf: float = 0.4, imgsz: int = 640):
     model = YOLO(model_path)
-    # jednokadarska detekcija samo za 'person' klasu
     res = model.predict(source=frame, imgsz=imgsz, conf=conf, verbose=False)[0]
-    # ako model ima names, nađi ID za 'person'
     names = model.names if hasattr(model, "names") else {}
     person_ids = [k for k, v in names.items() if str(v).lower() == "person"]
     person_ids = set(person_ids) if person_ids else None
@@ -66,7 +62,6 @@ def detect_and_draw(model_path: str, frame, conf: float = 0.4, imgsz: int = 640)
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
     return img, res
 
-# ---------------- public runner ----------------
 
 def run_snapshot_peak(
     video: str,
@@ -94,10 +89,9 @@ def run_snapshot_peak(
     peak_frame, peak_count = find_peak_from_counts(counts_csv)
     t_peak = frame_to_seconds(peak_frame, fps, int(vid_stride))
 
-    # kandidati za fino traženje oko peaka
     candidates: List[float] = [t_peak]
     if window and window > 0:
-        step = max(1.0 / fps, 0.2)  # ~5 fps ili finije
+        step = max(1.0 / fps, 0.2)  # 5 fps ili finije
         t = float(window)
         sweep = [t_peak + dt for dt in [x * step for x in range(int(-t/step), int(t/step) + 1)]]
         candidates = sorted(set([round(x, 2) for x in sweep]))
@@ -112,7 +106,6 @@ def run_snapshot_peak(
             best_img = img.copy()
 
     if best_img is None:
-        # fallback: makar snimi „sirovi” frame na t_peak
         best_img = grab_frame_at_time(video, t_peak)
 
     Path(os.path.dirname(out) or ".").mkdir(parents=True, exist_ok=True)
@@ -125,7 +118,6 @@ def run_snapshot_peak(
         "best_count": int(best_n)
     }
 
-# ---------------- CLI ----------------
 
 def main():
     ap = argparse.ArgumentParser(description="Snimi snapshot najprometnijeg trenutka sa boxovima.")

@@ -8,7 +8,6 @@ def rolling_sum(arr, window):
         return arr.copy()
     c = np.cumsum(np.insert(arr, 0, 0))
     out = c[window:] - c[:-window]
-    # pad na početku da zadrži istu dužinu (centar prozora nije bitan za izvještaj)
     pad = np.full(window-1, np.nan)
     return np.concatenate([pad, out])
 
@@ -75,7 +74,6 @@ def run_analysis(
     uniq_tot = np.array(uniq_tot, dtype=int)
 
     # 3) Vremenske oznake za svaku izmjeru (sekunde)
-    #    Svaki 'frame_idx' predstavlja dekodirani frame nakon preskakanja.
     t_sec = (frames * int(vid_stride)) / float(fps)
 
     # 4) Agregacija po sekundi (forward-fill zadnje poznate vrijednosti)
@@ -83,7 +81,6 @@ def run_analysis(
     per_sec = np.zeros(T+1, dtype=float)
     per_sec[:] = np.nan
 
-    # mapiraj svaku mjeru na najbližu sekundu (floor)
     sec_idx = np.floor(t_sec).astype(int)
     last_in_sec = {}
     for s, c in zip(sec_idx, counts_now):
@@ -91,7 +88,6 @@ def run_analysis(
     for s, c in last_in_sec.items():
         if 0 <= s <= T:
             per_sec[s] = c
-    # forward fill
     cur = 0.0
     for s in range(T+1):
         if not np.isnan(per_sec[s]):
@@ -165,9 +161,9 @@ def run_analysis(
         "p90": float(p90),
         "p95": float(p95),
         "peak_now": int(peak_now),
-        "peak_now_t": int(peak_now_t),           # sekunda
+        "peak_now_t": int(peak_now_t),           
         "peak_now_t_hms": _fmt_time(int(peak_now_t)),
-        "windows": windows,                      # lista tupleova
+        "windows": windows,                     
         "files": {
             "per_sec": per_sec_path,
             "by_minute": by_minute_path,
@@ -191,7 +187,6 @@ def main():
         win_seconds=args.win_seconds,
     )
 
-    # Ljudski ispis (isti kao prije, samo koristi summary)
     print("\n===== Rezime popunjenosti =====")
     print(f"Video FPS:           {summary['fps']:.2f}")
     print(f"Dužina (s):          {summary['duration_sec']}  (~{_fmt_time(int(summary['duration_sec']))})")

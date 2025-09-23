@@ -2,7 +2,6 @@ from ultralytics import YOLO
 import argparse, csv, sys
 from typing import Dict, Any, Optional
 
-# -------------- public runner ----------------
 
 def run_unique_count(
     video: str,
@@ -76,7 +75,6 @@ def run_unique_count(
         }
     }
 
-# -------------- CLI ----------------
 
 def main():
     ap = argparse.ArgumentParser()
