@@ -36,4 +36,6 @@ jobs:
           npm run lint || true
 
       - name: Build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: ${{ secrets.FRONTEND_API_BASE_URL }}
         run: npm run build
