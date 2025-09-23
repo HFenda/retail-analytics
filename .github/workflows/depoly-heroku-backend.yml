@@ -34,8 +34,11 @@ jobs:
         with:
           context: .
           file: backend/Dockerfile
+          platforms: linux/amd64
           push: true
           tags: registry.heroku.com/${{ secrets.HEROKU_APP_NAME }}/web
+          provenance: false
+          sbom: false
 
       - name: Install Heroku CLI
         run: |
