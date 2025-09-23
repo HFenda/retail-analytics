@@ -14,4 +14,4 @@ COPY ml /ml
 
 ENV PYTHONPATH="/app:/ml:${PYTHONPATH}"
 
-CMD ["gunicorn","-k","uvicorn.workers.UvicornWorker","-w","2","-b","0.0.0.0:${PORT:-8000}","app.main:app"]
+CMD ["sh","-c","exec gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:${PORT:-8000} app.main:app"]
