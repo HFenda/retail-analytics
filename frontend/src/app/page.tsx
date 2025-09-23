@@ -1,63 +1,59 @@
 "use client";
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  Upload, FileVideo, CheckCircle2, X, Loader2, Download,
-  Image as ImageIcon, AlertTriangle, ChartBar, Flame, Link as LinkIcon
-} from "lucide-react";
+import { Upload, FileVideo, CheckCircle2, X, Loader2, Download, Image as ImageIcon, AlertTriangle, ChartBar, Flame, Link as LinkIcon, TimerReset } from "lucide-react";
 
-// -------------------- Types --------------------
 type HeatmapFiles = {
-  overlay: string;
-  colored: string;
-  gray: string;
-  transparent_png: string;
-  preview: string;
+  overlay?: string;
+  colored?: string;
+  gray?: string;
+  transparent_png?: string;
+  preview?: string;
 };
 
 type Result = {
   job_id: string;
-  counts_csv: string;
-  per_sec_csv: string;
-  by_min_csv: string;
-  peaks_csv: string;
-  heatmap: HeatmapFiles;
-  snapshot: string;
-  unique_total: number;
-  peak: number;
+  counts_csv?: string;
+  per_sec_csv?: string;
+  by_min_csv?: string;
+  peaks_csv?: string;
+  heatmap?: HeatmapFiles;
+  snapshot?: string;
+  unique_total?: number;
+  peak?: number;
 };
 
 type JobQueued = {
   job_id: string;
-  status_url: string;
-  results_url?: string;
+  status_url: string;   // npr. /api/v1/jobs/<id>
+  results_url?: string; // npr. /files/results/<id>/
 };
 
 function cn(...cls: (string | false | null | undefined)[]) {
   return cls.filter(Boolean).join(" ");
 }
 
+const API =
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
+
+if (!API && process.env.NODE_ENV === "production") {
+  throw new Error("NEXT_PUBLIC_API_BASE_URL is not set");
+}
+
+const absUrl = (u?: string) => (!u ? "" : u.startsWith("/") ? `${API}${u}` : u);
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);         // upload-in-progress
-  const [isPolling, setIsPolling] = useState(false);     // job-processing
+  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "queued" | "processing" | "done" | "failed">("idle");
+  const [statusMsg, setStatusMsg] = useState<string>("");
   const [res, setRes] = useState<Result | null>(null);
-  const [job, setJob] = useState<JobQueued | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [show, setShow] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "heatmap" | "files">("overview");
-
-  const API =
-    process.env.NEXT_PUBLIC_API_BASE_URL ??
-    (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
-  if (!API && process.env.NODE_ENV === "production") {
-    throw new Error("NEXT_PUBLIC_API_BASE_URL is not set");
-  }
-
-  // Prefixaj apsolutno sve što nije već http(s)
-  const absUrl = (u?: string) => (!u ? "" : /^https?:\/\//i.test(u) ? u : `${API}${u}`);
 
   // Upload handlers
   const onDrop = (e: React.DragEvent<HTMLLabelElement>) => {
@@ -70,50 +66,100 @@ export default function Home() {
     if (f) setFile(f);
   };
 
+  async function pollStatus(statusUrlAbs: string, maxSeconds = 480) {
+    setPhase("queued");
+    setStatusMsg("Queued…");
+    const start = Date.now();
+    while (Date.now() - start < maxSeconds * 1000) {
+      try {
+        const r = await fetch(statusUrlAbs, { cache: "no-store" });
+        if (r.status === 404) throw new Error("Job je istekao ili ne postoji (404). Pošalji ponovo.");
+        if (!r.ok) throw new Error(`Greška na statusu: ${r.status}`);
+        const js = await r.json(); // očekujemo { status: "queued" | "processing" | "done" | "failed", error? }
+        const s = (js.status || "").toLowerCase();
+
+        if (s === "processing") {
+          setPhase("processing");
+          setStatusMsg("Processing…");
+        } else if (s === "done") {
+          setPhase("done");
+          setStatusMsg("Done.");
+          return true;
+        } else if (s === "failed") {
+          throw new Error(js?.error || "Job failed.");
+        } else {
+          setPhase("queued");
+          setStatusMsg("Queued…");
+        }
+      } catch (e: any) {
+        setError(e?.message || "Status error");
+        setPhase("failed");
+        return false;
+      }
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+    setError("Polling timeout (predugo čeka).");
+    setPhase("failed");
+    return false;
+  }
+
+  async function fetchResultJson(resultsBase?: string) {
+    if (!resultsBase) throw new Error("results_url nedostaje.");
+    const url = absUrl(`${resultsBase.replace(/\/?$/, "/")}result.json`);
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error(`Ne mogu učitati result.json (${r.status}).`);
+    const data: Result = await r.json();
+    return data;
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!file) { setError("Select a video file."); return; }
     setError(null);
-    setLoading(true);
     setRes(null);
-    setJob(null);
+    setPhase("idle");
+    setStatusMsg("");
+    setLoading(true);
     setShow(false);
 
-    const form = new FormData();
-    form.append("file", file);
-    form.append("vid_stride", "6");
-
     try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("vid_stride", "6");
+
+      // 1) enqueue
       const r = await fetch(`${API}/api/v1/analyze`, { method: "POST", body: form });
       if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
+      const queued: JobQueued = await r.json();
 
-      // Ako je queue odgovor (202 + status_url), pokreni polling
-      if (r.status === 202 || data?.status_url) {
-        const j: JobQueued = {
-          job_id: data.job_id,
-          status_url: data.status_url,
-          results_url: data.results_url,
-        };
-        setJob(j);
-        setShow(true);
-        setActiveTab("overview");
-        // Poll u pozadini
-        pollJob(j);
-      } else {
-        // Inače smatramo da smo već dobili finalni rezultat
-        setRes(data as Result);
-        setShow(true);
-        setActiveTab("overview");
+      // 2) poll
+      const ok = await pollStatus(absUrl(queued.status_url));
+      if (!ok) throw new Error(error || "Status polling failed.");
+
+      // 3) load result.json
+      const data = await fetchResultJson(queued.results_url);
+      // sanity fallbacks za preview
+      if (data?.heatmap && !data.heatmap.preview) {
+        data.heatmap.preview =
+          data.heatmap.colored ||
+          data.heatmap.gray ||
+          data.heatmap.overlay ||
+          data.heatmap.transparent_png ||
+          "";
       }
+
+      setRes({ ...data, job_id: queued.job_id });
+      setShow(true);
+      setActiveTab("overview");
     } catch (err: any) {
       setError(err?.message || "Server error.");
+      setPhase("failed");
     } finally {
       setLoading(false);
     }
   }
 
-  // Fake progress dok traje upload
+  // Fake progress bar da UI ne bude prazan
   const [progress, setProgress] = useState(0);
   useEffect(() => {
     if (!loading) { setProgress(0); return; }
@@ -121,53 +167,6 @@ export default function Home() {
     const id = setInterval(() => setProgress(p => (p < 92 ? p + Math.random() * 7 : p)), 350);
     return () => clearInterval(id);
   }, [loading]);
-
-  // Polling
-  async function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
-
-  async function pollJob(j: JobQueued) {
-    setIsPolling(true);
-    const maxAttempts = 300; // ~15 min na 3s interval
-    for (let i = 0; i < maxAttempts; i++) {
-      try {
-        const r = await fetch(absUrl(j.status_url), { cache: "no-store" });
-        if (r.ok) {
-          const s = await r.json();
-
-          // Ako status endpoint već vraća kompletan rezultat
-          if (s?.heatmap || s?.snapshot || s?.counts_csv) {
-            setRes(s as Result);
-            setJob(null);
-            setIsPolling(false);
-            return;
-          }
-
-          // Ako javlja da je gotovo, pokušaj pokupiti agregirani JSON iz results_url (razni nazivi)
-          const resUrl = s?.results_url || j.results_url;
-          if ((s?.status === "done" || s?.done === true || s?.state === "completed") && resUrl) {
-            const candidates = ["result.json", "index.json", "final.json"];
-            for (const name of candidates) {
-              try {
-                const rr = await fetch(absUrl(`${resUrl}${resUrl.endsWith("/") ? "" : "/"}${name}`), { cache: "no-store" });
-                if (rr.ok) {
-                  const final = await rr.json();
-                  setRes(final as Result);
-                  setJob(null);
-                  setIsPolling(false);
-                  return;
-                }
-              } catch { /* try next */ }
-            }
-            // Ako nema agregata, ostavi da nastavi pokušavati još malo
-          }
-        }
-      } catch { /* try again */ }
-
-      await sleep(3000);
-    }
-    setError("Processing took too long. Try a smaller video.");
-    setIsPolling(false);
-  }
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-neutral-950 to-neutral-900 text-neutral-100">
@@ -233,17 +232,24 @@ export default function Home() {
                       <Flame className="mr-2 h-4 w-4" />
                     )}
                   </AnimatePresence>
-                  {loading ? "Uploading…" : "Run analysis"}
+                  {loading ? "Analyzing…" : "Run analysis"}
                 </button>
-                {(error || isPolling) && (
-                  <div className="flex items-center gap-2">
-                    {isPolling && <Loader2 className="h-4 w-4 animate-spin text-white/70" />}
-                    {error && (
-                      <div className="flex items-center gap-2 text-red-300">
-                        <AlertTriangle className="h-4 w-4" />
-                        <span className="text-sm">{error}</span>
-                      </div>
-                    )}
+
+                {/* status badge */}
+                {phase !== "idle" && (
+                  <span className={cn(
+                    "inline-flex items-center gap-1 rounded-xl border border-white/15 px-3 py-1 text-sm",
+                    phase === "failed" ? "text-red-300" : "text-neutral-300"
+                  )}>
+                    <TimerReset className="h-4 w-4" />
+                    {statusMsg}
+                  </span>
+                )}
+
+                {error && (
+                  <div className="flex items-center gap-2 text-red-300">
+                    <AlertTriangle className="h-4 w-4" />
+                    <span className="text-sm">{error}</span>
                   </div>
                 )}
               </div>
@@ -253,11 +259,8 @@ export default function Home() {
                   <div className="h-2 w-full overflow-hidden rounded bg-white/10">
                     <div className="h-full bg-white" style={{ width: `${Math.min(100, Math.round(progress))}%` }} />
                   </div>
-                  <p className="text-xs text-neutral-400">Uploading video…</p>
+                  <p className="text-xs text-neutral-400">Processing frames, people, heatmap…</p>
                 </div>
-              )}
-              {!loading && isPolling && (
-                <p className="text-xs text-neutral-400">Processing on server…</p>
               )}
             </form>
           </div>
@@ -276,7 +279,7 @@ export default function Home() {
 
         {/* Results Modal */}
         <AnimatePresence>
-          {show && (res || job) && (
+          {show && res && (
             <div className="fixed inset-0 z-50">
               <div className="absolute inset-0 bg-black/60" onClick={() => setShow(false)} />
               <motion.div
@@ -288,28 +291,12 @@ export default function Home() {
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="mb-3 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div>
-                      <h3 className="text-lg font-semibold">Analysis results</h3>
-                      <p className="text-sm text-neutral-400">People counting, peak snapshot and heatmap.</p>
-                    </div>
-                    {job && (
-                      <span className="rounded bg-white/10 px-2 py-1 text-xs">
-                        Job: {job.job_id} • {isPolling ? "processing…" : "queued"}
-                      </span>
-                    )}
+                  <div>
+                    <h3 className="text-lg font-semibold">Analysis results</h3>
+                    <p className="text-sm text-neutral-400">People counting, peak snapshot and heatmap.</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {job?.status_url && (
-                      <a
-                        href={absUrl(job.status_url)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs underline text-neutral-300"
-                      >
-                        View status JSON
-                      </a>
-                    )}
+                    {res.job_id && <span className="rounded bg-white/10 px-2 py-1 text-xs">Job: {res.job_id}</span>}
                     <button onClick={() => setShow(false)} className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10">
                       <X className="mr-1 h-4 w-4" /> Close
                     </button>
@@ -318,10 +305,10 @@ export default function Home() {
 
                 {/* KPIs */}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <KPI label="Unique total" value={res?.unique_total ?? "—"} />
-                  <KPI label="Peak" value={res?.peak ?? "—"} />
-                  <KPI label="CSV files" value={res ? 4 : "—"} />
-                  <KPI label="Heatmap variants" value={res ? 3 : "—"} />
+                  <KPI label="Unique total" value={res.unique_total ?? "-"} />
+                  <KPI label="Peak" value={res.peak ?? "-"} />
+                  <KPI label="CSV files" value={[res.counts_csv, res.per_sec_csv, res.by_min_csv, res.peaks_csv].filter(Boolean).length} />
+                  <KPI label="Heatmap variants" value={Object.values(res.heatmap ?? {}).filter(Boolean).length} />
                 </div>
 
                 {/* Tabs */}
@@ -340,47 +327,37 @@ export default function Home() {
 
                   {activeTab === "overview" && (
                     <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <Panel title="Peak snapshot" href={res?.snapshot ? absUrl(res.snapshot) : undefined}>
-                        {res?.snapshot
-                          ? <ResponsiveImg src={absUrl(res.snapshot)} alt="snapshot" />
-                          : <p className="text-sm text-neutral-400">Processing…</p>}
+                      <Panel title="Peak snapshot" href={absUrl(res.snapshot)}>
+                        <ResponsiveImg src={absUrl(res.snapshot)} alt="snapshot" />
                       </Panel>
-                      <Panel title="Heatmap preview" href={res?.heatmap?.preview ? absUrl(res.heatmap.preview) : undefined}>
-                        {res?.heatmap?.preview
-                          ? <ResponsiveImg src={absUrl(res.heatmap.preview)} alt="heatmap" />
-                          : <p className="text-sm text-neutral-400">Processing…</p>}
+                      <Panel title="Heatmap preview" href={absUrl(res.heatmap?.preview)}>
+                        <ResponsiveImg src={absUrl(res.heatmap?.preview)} alt="heatmap" />
                       </Panel>
                     </div>
                   )}
 
                   {activeTab === "heatmap" && (
                     <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                      <Panel title="Overlay" href={res?.heatmap?.overlay ? absUrl(res.heatmap.overlay) : undefined}>
-                        {res?.heatmap?.overlay
-                          ? <ResponsiveImg src={absUrl(res.heatmap.overlay)} alt="overlay" />
-                          : <p className="text-sm text-neutral-400">Processing…</p>}
+                      <Panel title="Overlay" href={absUrl(res.heatmap?.overlay)}>
+                        <ResponsiveImg src={absUrl(res.heatmap?.overlay)} alt="overlay" />
                       </Panel>
-                      <Panel title="Transparent PNG" href={res?.heatmap?.transparent_png ? absUrl(res.heatmap.transparent_png) : undefined}>
-                        {res?.heatmap?.transparent_png
-                          ? <ResponsiveImg src={absUrl(res.heatmap.transparent_png)} alt="transparent" />
-                          : <p className="text-sm text-neutral-400">Processing…</p>}
+                      <Panel title="Transparent PNG" href={absUrl(res.heatmap?.transparent_png)}>
+                        <ResponsiveImg src={absUrl(res.heatmap?.transparent_png)} alt="transparent" />
                       </Panel>
-                      <Panel title="Gray/Colored" href={(res?.heatmap?.colored || res?.heatmap?.gray) ? absUrl(res.heatmap.colored || res.heatmap.gray) : undefined}>
-                        {(res?.heatmap?.colored || res?.heatmap?.gray)
-                          ? <ResponsiveImg src={absUrl(res.heatmap.colored || res.heatmap.gray)} alt="variant" />
-                          : <p className="text-sm text-neutral-400">Processing…</p>}
+                      <Panel title="Gray/Colored" href={absUrl(res.heatmap?.colored || res.heatmap?.gray)}>
+                        <ResponsiveImg src={absUrl(res.heatmap?.colored || res.heatmap?.gray)} alt="variant" />
                       </Panel>
                     </div>
                   )}
 
                   {activeTab === "files" && (
                     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <FileLink label="counts.csv" href={res?.counts_csv ? absUrl(res.counts_csv) : undefined} />
-                      <FileLink label="occupancy_per_sec.csv" href={res?.per_sec_csv ? absUrl(res.per_sec_csv) : undefined} />
-                      <FileLink label="by_minute.csv" href={res?.by_min_csv ? absUrl(res.by_min_csv) : undefined} />
-                      <FileLink label="peaks.csv" href={res?.peaks_csv ? absUrl(res.peaks_csv) : undefined} />
-                      <FileLink label="heatmap_overlay.png" href={res?.heatmap?.overlay ? absUrl(res.heatmap.overlay) : undefined} />
-                      <FileLink label="heatmap_transparent.png" href={res?.heatmap?.transparent_png ? absUrl(res.heatmap.transparent_png) : undefined} />
+                      <FileLink label="counts.csv" href={absUrl(res.counts_csv)} />
+                      <FileLink label="occupancy_per_sec.csv" href={absUrl(res.per_sec_csv)} />
+                      <FileLink label="by_minute.csv" href={absUrl(res.by_min_csv)} />
+                      <FileLink label="peaks.csv" href={absUrl(res.peaks_csv)} />
+                      <FileLink label="heatmap_overlay.png" href={absUrl(res.heatmap?.overlay)} />
+                      <FileLink label="heatmap_transparent.png" href={absUrl(res.heatmap?.transparent_png)} />
                     </div>
                   )}
                 </div>
@@ -402,7 +379,6 @@ export default function Home() {
   );
 }
 
-// -------------------- Subcomponents --------------------
 function KPI({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -425,7 +401,7 @@ function FeatureItem({ title, icon, children }: { title: string; icon?: React.Re
 }
 
 function ResponsiveImg({ src, alt }: { src?: string; alt: string }) {
-  if (!src) return null;
+  if (!src) return <div className="text-xs text-neutral-400">Not available</div>;
   return (
     <motion.img
       initial={{ opacity: 0, scale: 0.98 }}

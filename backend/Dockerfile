@@ -6,19 +6,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Backend deps
-COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# BACKEND deps
+COPY backend/requirements.txt /tmp/req-backend.txt
+# WORKER deps
+COPY worker/requirements.txt /tmp/req-worker.txt
 
-COPY worker/requirements.txt /tmp/worker-req.txt
-RUN pip install --no-cache-dir -r /tmp/worker-req.txt || true
+RUN pip install --no-cache-dir -r /tmp/req-backend.txt \
+ && pip install --no-cache-dir -r /tmp/req-worker.txt
 
 # Kod
 COPY backend /app
 COPY ml /ml
 COPY worker /worker
-
-# Start skripta
 COPY backend/start.sh /start.sh
 RUN chmod +x /start.sh
 

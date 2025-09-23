@@ -1,12 +1,11 @@
-set -e
+set -eu
 
-export BACKEND_URL="http://127.0.0.1:${PORT}"
+for d in "$UPLOADS_DIR" "$RESULTS_DIR" "$PROCESSED_DIR" "$FAILED_DIR"; do
+  [ -n "${d:-}" ] && mkdir -p "$d"
+done
 
-export UPLOADS_DIR="/data/uploads"
-export RESULTS_DIR="/data/results"
-export PROCESSED_DIR="/data/processed"
-export FAILED_DIR="/data/failed"
+export PYTHONPATH="/app:/ml:${PYTHONPATH:-}"
 
 python /worker/run_worker.py &
 
-exec gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:${PORT} app.main:app
+exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:$PORT app.main:app
