@@ -1,5 +1,5 @@
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI,Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.routing import APIRoute
@@ -11,6 +11,10 @@ app = FastAPI(title="Retail Analytics")
 @app.get("/health")
 def health():
     return {"ok": True}
+
+@app.head("/health")
+def health_head():
+    return Response(status_code=200)
 
 app.add_middleware(
     CORSMiddleware,
