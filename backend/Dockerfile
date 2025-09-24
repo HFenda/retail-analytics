@@ -21,6 +21,6 @@ COPY worker /worker
 COPY backend/start.sh /start.sh
 RUN chmod +x /start.sh
 
-ENV PYTHONPATH="/app:/ml:${PYTHONPATH}"
+ENV PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}/app"
 
 CMD ["/bin/sh","/start.sh"]
