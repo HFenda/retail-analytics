@@ -2,9 +2,9 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from uuid import uuid4
 from pathlib import Path
-import os, json
+import json
 
-from app.background_queue import enqueue_for_processing
+from app.background_queue import enqueue_for_processing  # ← DODANO
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
@@ -14,30 +14,27 @@ RESULTS_DIR = DATA_ROOT / "results"
 
 def to_url(abs_path: str) -> str:
     p = Path(abs_path).resolve()
-    rel = p.relative_to(DATA_ROOT) 
+    rel = p.relative_to(DATA_ROOT)
     return "/files/" + rel.as_posix()
 
 def enqueue_job(video_path: str, vid_stride: int) -> str:
     job_id = str(uuid4())
     job_dir = RESULTS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
-
     (job_dir / "request.json").write_text(json.dumps({
         "job_id": job_id,
         "video_path": video_path,
         "vid_stride": vid_stride
     }, ensure_ascii=False, indent=2))
-
-    (job_dir / "status.json").write_text(json.dumps({"status": "queued"}, ensure_ascii=False, indent=2))
-
-    enqueue_for_processing(job_id, video_path, vid_stride)
-
+    (job_dir / "status.json").write_text(json.dumps({"status": "queued"}))
+    # stvarno ubaci posao u in-memory red
+    enqueue_for_processing(job_id, video_path, vid_stride)  # ← DODANO
     return job_id
 
 @router.post("/analyze")
 async def analyze(
     file: UploadFile = File(...),
-    vid_stride: int = Form(6)    
+    vid_stride: int = Form(6)
 ):
     try:
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

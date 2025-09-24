@@ -1,10 +1,11 @@
 from pathlib import Path
-from fastapi import FastAPI,Response
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.routing import APIRoute
 
 from app.api.v1.jobs import router as jobs_router
+from app.background_queue import start_consumer  # ← DODANO
 
 app = FastAPI(title="Retail Analytics")
 
@@ -34,6 +35,9 @@ app.mount("/files", StaticFiles(directory=str(DATA_ROOT)), name="files")
 app.include_router(jobs_router)
 
 @app.on_event("startup")
-def _print_routes():
+def _startup():
+    # pokreni in-memory worker nit
+    start_consumer()
+    # debug: ispiši rute (možeš kasnije obrisati)
     paths = [r.path for r in app.routes if isinstance(r, APIRoute)]
     print("[routes]", paths, flush=True)
