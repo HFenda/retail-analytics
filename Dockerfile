@@ -12,7 +12,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# build kontekst je ROOT, zato ovo radi:
 COPY backend/ /app/
 COPY ml /ml
 COPY worker /worker
