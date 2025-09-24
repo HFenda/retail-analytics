@@ -1,9 +1,11 @@
+# backend/app/main.py
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.jobs import router as jobs_router
+from app.background_queue import start_consumer   # ← DODANO
 
 app = FastAPI(title="Retail Analytics")
 
@@ -28,3 +30,7 @@ app.include_router(jobs_router)
 @app.get("/health")
 def health():
     return {"ok": True}
+
+@app.on_event("startup")
+def _startup():
+    start_consumer()

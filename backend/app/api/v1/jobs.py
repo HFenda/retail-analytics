@@ -2,7 +2,9 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from uuid import uuid4
 from pathlib import Path
-import os, shutil, json
+import os, json
+
+from app.background_queue import enqueue_for_processing
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
@@ -16,20 +18,20 @@ def to_url(abs_path: str) -> str:
     return "/files/" + rel.as_posix()
 
 def enqueue_job(video_path: str, vid_stride: int) -> str:
-    """
-    Najjednostavniji 'queue':
-    napravi job dir i status.json koje worker može da pokupi.
-    Pravi queue (Redis, RQ, Celery) je bolje.
-    """
     job_id = str(uuid4())
     job_dir = RESULTS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+
     (job_dir / "request.json").write_text(json.dumps({
         "job_id": job_id,
         "video_path": video_path,
         "vid_stride": vid_stride
     }, ensure_ascii=False, indent=2))
-    (job_dir / "status.json").write_text(json.dumps({"status": "queued"}))
+
+    (job_dir / "status.json").write_text(json.dumps({"status": "queued"}, ensure_ascii=False, indent=2))
+
+    enqueue_for_processing(job_id, video_path, vid_stride)
+
     return job_id
 
 @router.post("/analyze")
