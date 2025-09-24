@@ -1,5 +1,7 @@
+# backend/Dockerfile
 FROM python:3.11-slim
 
+# sistemske zavisnosti
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ffmpeg libglib2.0-0 libsm6 libxext6 libxrender-dev curl \
     && rm -rf /var/lib/apt/lists/*
@@ -12,20 +14,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 1) Kopiraj backend kod i requirements u /app
-COPY backend/ /app/
+# Requirements prvo radi cache-a
+COPY backend/requirements.txt /tmp/req-backend.txt
+RUN pip install --no-cache-dir -r /tmp/req-backend.txt
 
-# 2) (Ako import-aš nešto iz ml/ ili worker/ u runtime-u, kopiraj i to)
-COPY ml /ml
+# Kopiraj kod
+COPY backend /app
 COPY worker /worker
-
-# 3) Install Python deps
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 4) Start skripta
+COPY ml /ml
 COPY backend/start.sh /start.sh
 RUN chmod +x /start.sh
 
+# Python path da vidi i /worker i /ml
 ENV PYTHONPATH=/app:/ml:/worker
 
 CMD ["/bin/sh","/start.sh"]

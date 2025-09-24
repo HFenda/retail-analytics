@@ -4,7 +4,7 @@ from uuid import uuid4
 from pathlib import Path
 import json
 
-from app.background_queue import enqueue_for_processing  # ← DODANO
+from app.background_queue import enqueue_for_processing  # ubacuje posao u red
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
@@ -28,7 +28,7 @@ def enqueue_job(video_path: str, vid_stride: int) -> str:
     }, ensure_ascii=False, indent=2))
     (job_dir / "status.json").write_text(json.dumps({"status": "queued"}))
     # stvarno ubaci posao u in-memory red
-    enqueue_for_processing(job_id, video_path, vid_stride)  # ← DODANO
+    enqueue_for_processing(job_id, video_path, vid_stride)
     return job_id
 
 @router.post("/analyze")
