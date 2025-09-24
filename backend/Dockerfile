@@ -6,21 +6,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# BACKEND deps
 COPY backend/requirements.txt /tmp/req-backend.txt
-# WORKER deps
 COPY worker/requirements.txt /tmp/req-worker.txt
 
 RUN pip install --no-cache-dir -r /tmp/req-backend.txt \
  && pip install --no-cache-dir -r /tmp/req-worker.txt
 
-# Kod
 COPY backend /app
 COPY ml /ml
 COPY worker /worker
 COPY backend/start.sh /start.sh
 RUN chmod +x /start.sh
 
-ENV PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}/app"
+ENV PYTHONPATH=/app
 
 CMD ["/bin/sh","/start.sh"]
