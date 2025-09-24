@@ -1,0 +1,8 @@
+build:
+  docker:
+    web: backend/Dockerfile
+  config:
+    PYTHONPATH: /app:/ml:/worker
+
+run:
+  web: /bin/sh /start.sh
