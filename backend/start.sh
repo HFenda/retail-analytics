@@ -1,14 +1,23 @@
 #!/bin/sh
-set -euo pipefail
+set -e
 
-# Mora biti jedan proces zbog in-memory queue-a
-export WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"
-export WEB_TIMEOUT="${WEB_TIMEOUT:-120}"
+echo "[start.sh] Python version:"
+python -V
 
-WEB_CMD="gunicorn -k uvicorn.workers.UvicornWorker \
-  -w ${WEB_CONCURRENCY} \
-  --timeout ${WEB_TIMEOUT} \
-  -b 0.0.0.0:${PORT:-8000} app.main:app"
+echo "[start.sh] Sys.path and /app listing:"
+python - <<'PY'
+import sys, os
+print(sys.path)
+print(os.listdir("/app"))
+PY
 
-echo "[start.sh] Starting web (single worker for in-memory queue)"
-exec $WEB_CMD
+echo "[start.sh] Trying to import app.main:app..."
+python - <<'PY'
+import importlib
+m = importlib.import_module("app.main")
+print("Imported:", m)
+print("Has 'app' attribute:", hasattr(m, "app"))
+PY
+
+echo "[start.sh] Starting uvicorn directly"
+exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info
