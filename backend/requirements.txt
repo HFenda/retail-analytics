@@ -3,14 +3,14 @@ uvicorn[standard]==0.37.0
 python-multipart==0.0.20
 pydantic==2.11.9
 gunicorn==23.0.0
+requests==2.32.5
 
-ultralytics==8.3.203
-opencv-python-headless==4.12.0.88
-# NAPOMENA: SciPy nije nužan za ovo – izbačen zbog težine.
-# numpy zaključajmo na 1.26.x radi kompatibilnosti s torch 2.3 CPU
+# YOLO / CV stack – provjeren, lagan za build (CPU only)
+ultralytics==8.2.103
+opencv-python-headless==4.8.1.78
 numpy==1.26.4
 
-# --- PyTorch CPU ONLY (bez CUDA) ---
+# PyTorch CPU ONLY (bez CUDA; parirane verzije)
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.3.1+cpu
-torchvision==0.18.1+cpu
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
