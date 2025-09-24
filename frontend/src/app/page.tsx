@@ -3,7 +3,10 @@ export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, FileVideo, CheckCircle2, X, Loader2, Download, Image as ImageIcon, AlertTriangle, ChartBar, Flame, Link as LinkIcon, TimerReset } from "lucide-react";
+import {
+  Upload, FileVideo, CheckCircle2, X, Loader2, Download, Image as ImageIcon,
+  AlertTriangle, ChartBar, Flame, Link as LinkIcon, TimerReset
+} from "lucide-react";
 
 type HeatmapFiles = {
   overlay?: string;
@@ -45,10 +48,20 @@ if (!API && process.env.NODE_ENV === "production") {
 
 const absUrl = (u?: string) => (!u ? "" : u.startsWith("/") ? `${API}${u}` : u);
 
+// ————— FIX: normalizacija statusa iz backenda —————
+function normalizeStatus(raw?: string) {
+  const s = (raw || "").toLowerCase();
+  if (s === "processing" || s === "started" || s === "running") return "processing";
+  if (s === "finished" || s === "done" || s === "completed") return "finished";
+  if (s === "failed" || s === "error") return "failed";
+  return "queued";
+}
+// ————————————————————————————————————————————————
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState<"idle" | "queued" | "processing" | "done" | "failed">("idle");
+  const [phase, setPhase] = useState<"idle" | "queued" | "processing" | "finished" | "failed">("idle");
   const [statusMsg, setStatusMsg] = useState<string>("");
   const [res, setRes] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,18 +88,18 @@ export default function Home() {
         const r = await fetch(statusUrlAbs, { cache: "no-store" });
         if (r.status === 404) throw new Error("Job je istekao ili ne postoji (404). Pošalji ponovo.");
         if (!r.ok) throw new Error(`Greška na statusu: ${r.status}`);
-        const js = await r.json(); // očekujemo { status: "queued" | "processing" | "done" | "failed", error? }
-        const s = (js.status || "").toLowerCase();
+        const js = await r.json(); // očekuje { status: "queued" | "started" | "finished" | "failed" }
+        const s = normalizeStatus(js.status);
 
         if (s === "processing") {
           setPhase("processing");
           setStatusMsg("Processing…");
-        } else if (s === "done") {
-          setPhase("done");
-          setStatusMsg("Done.");
+        } else if (s === "finished") {
+          setPhase("finished");
+          setStatusMsg("Finished.");
           return true;
         } else if (s === "failed") {
-          throw new Error(js?.error || "Job failed.");
+          throw new Error(js?.error || "Job failed");
         } else {
           setPhase("queued");
           setStatusMsg("Queued…");
@@ -132,13 +145,13 @@ export default function Home() {
       if (!r.ok) throw new Error(await r.text());
       const queued: JobQueued = await r.json();
 
-      // 2) poll
+      // 2) poll (OBAVEZNO ABS URL!)
       const ok = await pollStatus(absUrl(queued.status_url));
       if (!ok) throw new Error(error || "Status polling failed.");
 
       // 3) load result.json
       const data = await fetchResultJson(queued.results_url);
-      // sanity fallbacks za preview
+      // fallback za heatmap preview
       if (data?.heatmap && !data.heatmap.preview) {
         data.heatmap.preview =
           data.heatmap.colored ||
@@ -159,7 +172,7 @@ export default function Home() {
     }
   }
 
-  // Fake progress bar da UI ne bude prazan
+  // Fake progress bar
   const [progress, setProgress] = useState(0);
   useEffect(() => {
     if (!loading) { setProgress(0); return; }
@@ -221,10 +234,14 @@ export default function Home() {
               )}
 
               <div className="flex items-center gap-3">
-                <button type="submit" disabled={!file || loading} className={cn(
-                  "inline-flex items-center rounded-xl bg-white/90 px-4 py-2 text-sm font-medium text-neutral-900",
-                  "hover:bg-white disabled:opacity-50"
-                )}>
+                <button
+                  type="submit"
+                  disabled={!file || loading}
+                  className={cn(
+                    "inline-flex items-center rounded-xl bg-white/90 px-4 py-2 text-sm font-medium text-neutral-900",
+                    "hover:bg-white disabled:opacity-50"
+                  )}
+                >
                   <AnimatePresence>
                     {loading ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -237,10 +254,12 @@ export default function Home() {
 
                 {/* status badge */}
                 {phase !== "idle" && (
-                  <span className={cn(
-                    "inline-flex items-center gap-1 rounded-xl border border-white/15 px-3 py-1 text-sm",
-                    phase === "failed" ? "text-red-300" : "text-neutral-300"
-                  )}>
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-xl border border-white/15 px-3 py-1 text-sm",
+                      phase === "failed" ? "text-red-300" : "text-neutral-300"
+                    )}
+                  >
                     <TimerReset className="h-4 w-4" />
                     {statusMsg}
                   </span>
@@ -269,10 +288,18 @@ export default function Home() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <h2 className="mb-4 text-white">What you get</h2>
             <div className="grid gap-3 text-sm text-neutral-300">
-              <FeatureItem title="Peak snapshot" icon={<ImageIcon className="h-4 w-4" />}>Automatic frame at the busiest moment.</FeatureItem>
-              <FeatureItem title="Heatmap layers" icon={<ImageIcon className="h-4 w-4" />}>Overlay, transparent PNG, multiple preview styles.</FeatureItem>
-              <FeatureItem title="CSV export" icon={<ImageIcon className="h-4 w-4" />}>Counts, occupancy per sec, by minute, peaks.</FeatureItem>
-              <FeatureItem title="Fast demo API" icon={<LinkIcon className="h-4 w-4" />}>Works locally or via the configured API URL.</FeatureItem>
+              <FeatureItem title="Peak snapshot" icon={<ImageIcon className="h-4 w-4" />}>
+                Automatic frame at the busiest moment.
+              </FeatureItem>
+              <FeatureItem title="Heatmap layers" icon={<ImageIcon className="h-4 w-4" />}>
+                Overlay, transparent PNG, multiple preview styles.
+              </FeatureItem>
+              <FeatureItem title="CSV export" icon={<ImageIcon className="h-4 w-4" />}>
+                Counts, occupancy per sec, by minute, peaks.
+              </FeatureItem>
+              <FeatureItem title="Fast demo API" icon={<LinkIcon className="h-4 w-4" />}>
+                Works locally or via the configured API URL.
+              </FeatureItem>
             </div>
           </div>
         </section>
@@ -297,7 +324,10 @@ export default function Home() {
                   </div>
                   <div className="flex items-center gap-2">
                     {res.job_id && <span className="rounded bg-white/10 px-2 py-1 text-xs">Job: {res.job_id}</span>}
-                    <button onClick={() => setShow(false)} className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10">
+                    <button
+                      onClick={() => setShow(false)}
+                      className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10"
+                    >
                       <X className="mr-1 h-4 w-4" /> Close
                     </button>
                   </div>
@@ -315,13 +345,16 @@ export default function Home() {
                 <div className="mt-5">
                   <div className="inline-flex rounded-xl border border-white/15 bg-white/5 p-1 text-sm">
                     {(["overview","heatmap","files"] as const).map(t => (
-                      <button key={t}
+                      <button
+                        key={t}
                         className={cn(
                           "rounded-lg px-3 py-1.5 capitalize",
                           activeTab === t ? "bg-white/15" : "text-neutral-300 hover:bg-white/10"
                         )}
                         onClick={() => setActiveTab(t)}
-                      >{t === "overview" ? "Overview" : t === "heatmap" ? "Heatmap" : "Files"}</button>
+                      >
+                        {t === "overview" ? "Overview" : t === "heatmap" ? "Heatmap" : "Files"}
+                      </button>
                     ))}
                   </div>
 
@@ -420,7 +453,12 @@ function Panel({ title, href, children }: { title: string; href?: string; childr
       <div className="flex items-center justify-between p-3">
         <h3 className="text-sm font-medium">{title}</h3>
         {href && (
-          <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10">
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10"
+          >
             <Download className="mr-2 h-4 w-4" /> Download
           </a>
         )}
@@ -438,7 +476,14 @@ function FileLink({ label, href }: { label: string; href?: string }) {
         <Download className="h-4 w-4 shrink-0 text-white/60" />
         <span className="truncate" title={label}>{label}</span>
       </div>
-      <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10">Download</a>
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center rounded-lg border border-white/15 px-3 py-1 text-sm hover:bg-white/10"
+      >
+        Download
+      </a>
     </div>
   );
 }
