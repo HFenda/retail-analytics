@@ -1,10 +1,16 @@
-fastapi
-uvicorn[standard]
-python-multipart
-ultralytics
-opencv-python
-numpy
-scipy
-pydantic
-opencv-python-headless
-gunicorn
+fastapi==0.117.1
+uvicorn[standard]==0.37.0
+python-multipart==0.0.20
+pydantic==2.11.9
+gunicorn==23.0.0
+
+ultralytics==8.3.203
+opencv-python-headless==4.12.0.88
+# NAPOMENA: SciPy nije nužan za ovo – izbačen zbog težine.
+# numpy zaključajmo na 1.26.x radi kompatibilnosti s torch 2.3 CPU
+numpy==1.26.4
+
+# --- PyTorch CPU ONLY (bez CUDA) ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
