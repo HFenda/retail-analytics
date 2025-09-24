@@ -1,6 +1,6 @@
 build:
   docker:
-    web: backend/Dockerfile
+    web: Dockerfile
 
 run:
   web: /bin/sh /start.sh
