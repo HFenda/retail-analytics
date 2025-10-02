@@ -1,0 +1,11 @@
+-i https://pypi.org/simple
+fastapi
+uvicorn[standard]
+python-multipart
+ultralytics
+opencv-python-headless
+numpy
+scipy
+pydantic
+gunicorn
+

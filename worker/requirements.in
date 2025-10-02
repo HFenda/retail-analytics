@@ -1,0 +1,6 @@
+-i https://pypi.org/simple
+opencv-python-headless
+ultralytics
+numpy
+requests
+

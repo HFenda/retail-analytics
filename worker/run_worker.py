@@ -63,7 +63,7 @@ def post_analyze(video_path: Path) -> dict:
     koji prima multipart field "video". Ako si endpoint nazvao drugačije, promijeni ispod.
     """
     url = f"{BACKEND_URL}/api/v1/analyze"
-    files = {"video": (video_path.name, open(video_path, "rb"), "video/mp4")}
+    files = {"file": (video_path.name, open(video_path, "rb"), "video/mp4")}
     data  = {"model_ref": YOLO_MODEL_REF}  # ako backend to koristi; ako ne, ukloni
 
     try:
