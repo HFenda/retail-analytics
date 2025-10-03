@@ -1,15 +1,22 @@
-import os
-import time
-import json
-import uuid
-import shutil
-import logging
+import os, time, json, uuid, tempfile, logging
 from pathlib import Path
-from typing import Dict, Any
+import boto3
+from botocore.client import Config
+import mimetypes
 
-# === ML pipeline direktno (NE diramo tvoj ml) ===
-# Ovo je ista logika kao u backend/app/services/processor.py,
-# samo lokalno u workeru da ne ovisimo o backendu.
+# === R2 env ===
+R2_ACCOUNT_ID    = os.getenv("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_KEY    = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_BUCKET        = os.getenv("R2_BUCKET", "retail-analytics")
+R2_ENDPOINT      = os.getenv("R2_ENDPOINT")  # https://<account>.r2.cloudflarestorage.com
+
+# === Worker tunables ===
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "3"))
+VID_STRIDE   = int(os.getenv("VID_STRIDE", "6"))
+YOLO_MODEL_REF = os.getenv("YOLO_MODEL_REF", "yolov8n.pt")
+
+# === ML imports (NE diraj svoj ml/) ===
 from ml import (
     run_unique_count,
     run_analysis,
@@ -17,147 +24,133 @@ from ml import (
     run_snapshot_peak,
 )
 
-def run_pipeline(video_path: str, workdir: str, *, vid_stride: int = 6) -> Dict[str, Any]:
-    Path(workdir).mkdir(parents=True, exist_ok=True)
-
-    counts_csv = str(Path(workdir) / "counts.csv")
-    uniq = run_unique_count(video=video_path, csv_path=counts_csv, vid_stride=vid_stride)
-
-    ana = run_analysis(video=video_path, counts_csv=counts_csv, vid_stride=vid_stride)
-
-    heat_dir = str(Path(workdir) / "heatmap")
-    heat = run_people_heatmap(video=video_path, outdir=heat_dir)
-
-    snap_path = str(Path(workdir) / "snapshot.jpg")
-    snap = run_snapshot_peak(video=video_path, counts_csv=counts_csv, vid_stride=vid_stride, out=snap_path)
-
-    return {
-        "job_id": Path(workdir).name,
-        "video": video_path,
-        "counts": uniq,
-        "analysis": ana,
-        "heatmap": heat,
-        "snapshot": {"out": snap_path} if isinstance(snap, str) else snap,
-    }
-
-# ============ Config iz ENV-a ============
-# Backend URL nam više ne treba za obradu, sve radimo lokalno (R2/lokalni storage).
-UPLOADS_DIR   = Path(os.getenv("UPLOADS_DIR", "/storage/uploads"))
-RESULTS_DIR   = Path(os.getenv("RESULTS_DIR", "/storage/results"))
-PROCESSED_DIR = Path(os.getenv("PROCESSED_DIR", "/storage/processed"))
-FAILED_DIR    = Path(os.getenv("FAILED_DIR", "/storage/failed"))
-
-# Backendov /api/v1/analyze sada pri uploadu kreira status fajl u STORAGE_DIR/status/<job_id>.json.
-# Mi ga čitamo. Ako STORAGE_DIR nije zadan, pretpostavimo parent od RESULTS_DIR.
-BASE_STORAGE  = Path(os.getenv("STORAGE_DIR", str(RESULTS_DIR.parent)))
-STATUS_DIR    = BASE_STORAGE / "status"
-
-POLL_SECONDS  = int(os.getenv("POLL_SECONDS", "2"))
-RETRY_MAX     = int(os.getenv("RETRY_MAX", "1"))  # mi sami radimo retry loop unutar obrade
-YOLO_MODEL_REF = os.getenv("YOLO_MODEL_REF", "yolov8n.pt")  # samo log/info, ml već zna što će
-
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".mpeg", ".mpg", ".webm", ".m4v", ".ts"}
-
-# ============ Logging ============
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [worker] %(levelname)s: %(message)s"
+# === R2 client ===
+_sess = boto3.session.Session()
+s3 = _sess.client(
+    "s3",
+    endpoint_url=R2_ENDPOINT,
+    aws_access_key_id=R2_ACCESS_KEY_ID,
+    aws_secret_access_key=R2_SECRET_KEY,
+    config=Config(signature_version="s3v4"),
+    region_name="auto",
 )
-log = logging.getLogger("worker")
 
-# ============ Helpers ============
-def ensure_dirs():
-    for d in (UPLOADS_DIR, RESULTS_DIR, PROCESSED_DIR, FAILED_DIR, STATUS_DIR):
-        d.mkdir(parents=True, exist_ok=True)
+def k_uploads(name:str) -> str: return f"uploads/{name}"
+def k_results(job_id:str, rel:str) -> str: return f"results/{job_id}/{rel.lstrip('/')}"
+def k_status(job_id:str) -> str: return f"status/{job_id}.json"
+
+def put_json(key:str, payload:dict):
+    s3.put_object(Bucket=R2_BUCKET, Key=key, Body=json.dumps(payload).encode("utf-8"),
+                  ContentType="application/json")
+
+def put_file(key:str, path:str, content_type:str|None=None):
+    if not content_type:
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    with open(path, "rb") as f:
+        s3.put_object(Bucket=R2_BUCKET, Key=key, Body=f, ContentType=content_type)
+
+def get_json(key:str) -> dict:
+    obj = s3.get_object(Bucket=R2_BUCKET, Key=key)
+    return json.loads(obj["Body"].read().decode("utf-8"))
+
+def obj_exists(key:str) -> bool:
+    try:
+        s3.head_object(Bucket=R2_BUCKET, Key=key); return True
+    except Exception:
+        return False
 
 def list_pending_jobs():
-    """Nađi sve status/*.json sa statusom 'pending'."""
-    ensure_dirs()
-    jobs = []
-    for p in STATUS_DIR.glob("*.json"):
+    # status/<job>.json == {"status":"pending", "file":"<upload_name>", "vid_stride":6, ...}
+    resp = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="status/")
+    out = []
+    for it in resp.get("Contents", []):
+        key = it["Key"]
         try:
-            js = json.loads(p.read_text(encoding="utf-8"))
-            if js.get("status") == "pending":
-                jobs.append((p.stem, js))  # (job_id, payload)
+            st = get_json(key)
+            if st.get("status") == "pending":
+                job_id = Path(key).stem
+                out.append((job_id, st))
         except Exception:
-            continue
-    return jobs
+            pass
+    return out
 
-def write_status(job_id: str, status: str, extra: dict | None = None):
-    ensure_dirs()
-    sp = STATUS_DIR / f"{job_id}.json"
-    data = {"status": status, "ts": int(time.time())}
-    if extra:
-        data.update(extra)
-    sp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def download_upload(upload_name:str) -> str:
+    key = k_uploads(upload_name)
+    fd, tmp = tempfile.mkstemp(suffix=Path(upload_name).suffix or ".mp4")
+    os.close(fd)
+    with open(tmp, "wb") as f:
+        s3.download_fileobj(R2_BUCKET, key, f)
+    return tmp
 
-def save_result(job_id: str, payload: dict):
-    out_dir = RESULTS_DIR / job_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "response.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return out_dir
+def process(job_id:str, upload_name:str, vid_stride:int):
+    tmp_video = download_upload(upload_name)
+    work = Path(tempfile.mkdtemp(prefix=f"job_{job_id}_"))
+    # 1) counts
+    counts_csv = str(work / "counts.csv")
+    uniq = run_unique_count(video=tmp_video, csv_path=counts_csv, vid_stride=vid_stride)
+    # 2) analysis
+    ana = run_analysis(video=tmp_video, counts_csv=counts_csv, vid_stride=vid_stride)
+    # 3) heatmap
+    heat_dir = str(work / "heatmap")
+    heat = run_people_heatmap(video=tmp_video, outdir=heat_dir)
+    # 4) snapshot
+    snap = str(work / "snapshot.jpg")
+    run_snapshot_peak(video=tmp_video, counts_csv=counts_csv, vid_stride=vid_stride, out=snap)
 
-def move_safe(src: Path, dst_dir: Path):
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / src.name
-    if dst.exists():
-        stem = src.stem
-        suffix = src.suffix
-        dst = dst_dir / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-    shutil.move(str(src), str(dst))
-    return dst
+    # Upload artefakte u results/<job>/…
+    put_file(k_results(job_id, "counts.csv"), counts_csv, "text/csv")
+    put_file(k_results(job_id, "occupancy_per_sec.csv"), ana["files"]["per_sec"], "text/csv")
+    put_file(k_results(job_id, "by_minute.csv"), ana["files"]["by_minute"], "text/csv")
+    put_file(k_results(job_id, "peaks.csv"), ana["files"]["peaks"], "text/csv")
+    put_file(k_results(job_id, "heatmap_overlay.png"), heat["artifacts"]["overlay"], "image/png")
+    put_file(k_results(job_id, "heatmap_colored.png"), heat["artifacts"]["colored"], "image/png")
+    put_file(k_results(job_id, "heatmap_gray.png"),    heat["artifacts"]["gray"],    "image/png")
+    put_file(k_results(job_id, "heatmap_transparent.png"), heat["artifacts"]["transparent_png"], "image/png")
+    put_file(k_results(job_id, "preview.jpg"), heat["artifacts"]["preview"], "image/jpeg")
+    put_file(k_results(job_id, "snapshot.jpg"), snap, "image/jpeg")
 
-def process_job(job_id: str, meta: dict):
-    """
-    Obradi jedan job:
-      - meta["file"] = ime fajla u UPLOADS_DIR (backend ga je stavio pri uploadu)
-      - meta["vid_stride"] opcionalno (default 6)
-    """
-    vid_name = meta.get("file")
-    if not vid_name:
-        write_status(job_id, "failed", {"error": "No file in status meta"})
-        return
+    # response.json (RELATIVNI ključevi – backend će ih presignati)
+    response = {
+        "counts_csv":        k_results(job_id, "counts.csv"),
+        "per_sec_csv":       k_results(job_id, "occupancy_per_sec.csv"),
+        "by_min_csv":        k_results(job_id, "by_minute.csv"),
+        "peaks_csv":         k_results(job_id, "peaks.csv"),
+        "heatmap": {
+            "overlay":         k_results(job_id, "heatmap_overlay.png"),
+            "colored":         k_results(job_id, "heatmap_colored.png"),
+            "gray":            k_results(job_id, "heatmap_gray.png"),
+            "transparent_png": k_results(job_id, "heatmap_transparent.png"),
+            "preview":         k_results(job_id, "preview.jpg"),
+        },
+        "snapshot":          k_results(job_id, "snapshot.jpg"),
+        "unique_total":      uniq["unique_total"],
+        "peak":              uniq["peak"],
+    }
+    put_json(k_results(job_id, "response.json"), response)
 
-    video_path = UPLOADS_DIR / vid_name
-    if not video_path.exists():
-        write_status(job_id, "failed", {"error": f"Upload not found: {vid_name}"})
-        return
-
-    vid_stride = int(meta.get("vid_stride", 6))
-    out_dir = RESULTS_DIR / job_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    write_status(job_id, "processing", {"file": vid_name})
-    log.info("Obrada start: file=%s job_id=%s stride=%s", vid_name, job_id, vid_stride)
-
-    try:
-        res = run_pipeline(str(video_path), str(out_dir), vid_stride=vid_stride)
-        save_result(job_id, res)
-        write_status(job_id, "done", {"attempts": 1})
-        move_safe(video_path, PROCESSED_DIR)
-        log.info("Obrada OK: %s (job_id=%s)", vid_name, job_id)
-    except Exception as e:
-        write_status(job_id, "failed", {"error": str(e)})
-        move_safe(video_path, FAILED_DIR)
-        log.error("Obrada FAIL: %s (job_id=%s) err=%s", vid_name, job_id, e)
-
-# ============ Main loop ============
 def main():
-    log.info("Worker startuje. Uploads=%s Results=%s Status=%s", UPLOADS_DIR, RESULTS_DIR, STATUS_DIR)
-    ensure_dirs()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(levelname)s: %(message)s")
+    log = logging.getLogger("worker")
+    log.info("Worker up. Poll=%ss  R2=%s", POLL_SECONDS, R2_BUCKET)
 
     while True:
         try:
-            pending = list_pending_jobs()
-            if not pending:
-                time.sleep(POLL_SECONDS)
-                continue
+            pend = list_pending_jobs()
+            if not pend:
+                time.sleep(POLL_SECONDS); continue
 
-            for job_id, meta in pending:
-                process_job(job_id, meta)
-
+            for job_id, st in pend:
+                try:
+                    log.info("Job %s start (file=%s, stride=%s)", job_id, st["file"], st.get("vid_stride", VID_STRIDE))
+                    put_json(k_status(job_id), {**st, "status":"processing", "ts": int(time.time())})
+                    process(job_id, st["file"], int(st.get("vid_stride", VID_STRIDE)))
+                    put_json(k_status(job_id), {**st, "status":"done", "ts": int(time.time())})
+                    log.info("Job %s done", job_id)
+                except Exception as e:
+                    log.exception("Job %s failed: %s", job_id, e)
+                    put_json(k_status(job_id), {**st, "status":"failed", "error": str(e), "ts": int(time.time())})
         except Exception as loop_err:
-            log.error("Global error u loopu: %s", loop_err)
+            logging.exception("Loop error: %s", loop_err)
             time.sleep(2)
 
 if __name__ == "__main__":
