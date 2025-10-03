@@ -1,0 +1,25 @@
+# općenito
+.git
+**/__pycache__/
+*.pyc
+
+# lokalni outputi / uploadi
+storage/
+backend/storage/
+worker/storage/
+
+# velike datoteke
+**/*.mp4
+**/*.mov
+**/*.mkv
+**/*.avi
+**/*.webm
+**/*.ts
+**/*.npy
+
+# modeli (ako ih ne želiš u image-u – Ultralytics će skinuti model u runtimeu)
+**/*.pt
+
+# frontend build i deps (nisu potrebni backend image-u)
+frontend/.next
+frontend/node_modules

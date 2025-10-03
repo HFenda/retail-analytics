@@ -4,7 +4,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Pytorch CPU wheels (brži i stabilniji build)
 ENV PIP_INDEX_URL=https://pypi.org/simple \
     PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 
@@ -14,18 +13,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.in /app/
+COPY backend/requirements.in /app/
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir --timeout=300 --retries=20 --prefer-binary -r requirements.in
 
-# Kopiraj kod backenda
-COPY . /app
-
-# KLJUČNO: kopiraj shared ML paket iz root-a repo-a
+COPY backend /app
 COPY ml /app/ml
 
-# Omogući import "ml" i "app"
 ENV PYTHONPATH=/app
 
 EXPOSE 8000
-CMD ["gunicorn","-k","uvicorn.workers.UvicornWorker","app.main:app","--bind","0.0.0.0:${PORT:-8000}","--workers","2","--threads","2","--timeout","3600"]
+CMD ["sh","-lc","exec gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 2 --timeout 3600"]

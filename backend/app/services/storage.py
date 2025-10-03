@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import UploadFile
 import shutil, uuid, os, mimetypes
 
-# S3/R2
+# R2/S3
 import boto3
 from botocore.client import Config
 
@@ -43,7 +43,7 @@ def _make_s3like_client():
 if IS_R2:
     _S3 = _make_s3like_client()
     _BUCKET = os.getenv("R2_BUCKET") or os.getenv("S3_BUCKET")
-    _PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE_URL") or os.getenv("S3_PUBLIC_BASE_URL")  # opcionalno (public bucket)
+    _PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE_URL") or os.getenv("S3_PUBLIC_BASE_URL")  # ako je bucket public
 
 def _r2_put(local_path: Path, key: str, content_type: str | None = None) -> str:
     extra = {}
@@ -51,9 +51,9 @@ def _r2_put(local_path: Path, key: str, content_type: str | None = None) -> str:
         extra["ContentType"] = content_type
     with open(local_path, "rb") as f:
         _S3.put_object(Bucket=_BUCKET, Key=key, Body=f.read(), **extra)
-    # URL – ili public base ili presigned
-    if _PUBLIC_BASE:
+    if _PUBLIC_BASE:  # sklopi public URL
         return f"{_PUBLIC_BASE.rstrip('/')}/{key.lstrip('/')}"
+    # fallback: presigned za čitanje (1h)
     return _S3.generate_presigned_url(
         "get_object",
         Params={"Bucket": _BUCKET, "Key": key},
@@ -61,13 +61,12 @@ def _r2_put(local_path: Path, key: str, content_type: str | None = None) -> str:
     )
 
 # ----------------------------
-# API koji koristi ostatak koda
+# API koji koristi ostatak backenda
 # ----------------------------
 def save_upload(file: UploadFile) -> str:
     """
-    Spremi upload lokalno (radi pipelinea). Ako je R2 uključen, caller
-    može kasnije uploadati isti fajl u bucket preko upload_path_and_url().
-    Vraća lokalni path.
+    Spremi upload na lokalni FS (pipeline radi nad lokalnim pathom).
+    Ako je R2 aktivan, kasnije pozivamo upload_path_and_url() da dižemo izlaze.
     """
     ensure_dirs()
     suffix = Path(file.filename or "").suffix or ".mp4"
@@ -89,7 +88,7 @@ def status_path(job_id: str) -> Path:
 
 def local_to_url(p: str) -> str:
     """
-    Lokalni FS -> /files/... URL za frontend kada nije r2.
+    Za lokalni FS vrati '/files/...' URL koji frontend zna otvoriti.
     """
     abs_p = Path(p).resolve()
     rel = abs_p.relative_to(BASE)   # pukne ako nije u storage/
@@ -97,15 +96,15 @@ def local_to_url(p: str) -> str:
 
 def upload_path_and_url(local_path: str, key: str | None = None, content_type: str | None = None) -> str:
     """
-    Ako je R2 aktivan, upload u bucket i vrati (public ili presigned) URL.
-    Ako nije, vrati /files/... URL od lokalnog patha.
+    Ako je R2 uključen, upload u bucket i vrati (public/presigned) URL.
+    Ako nije, vrati '/files/...' URL prema lokalnom pathu.
     """
     if not IS_R2:
         return local_to_url(local_path)
 
     lp = Path(local_path)
     if key is None:
-        # default: zadrži isti relativni path ispod results/
+        # default ključ = relativni path ispod BASE (npr results/abc/heatmap/preview.jpg)
         try:
             rel = lp.resolve().relative_to(BASE)
             key = rel.as_posix()
