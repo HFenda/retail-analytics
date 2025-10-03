@@ -1,0 +1,58 @@
+name: Deploy Worker to Heroku
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-heroku-worker.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HEROKU_APP: ra-worker            # ← promijeni ako ti je drugi naziv appa
+      HEROKU_REG: registry.heroku.com
+      IMAGE: registry.heroku.com/ra-worker/worker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker login to Heroku Registry
+        run: |
+          echo "${{ secrets.HEROKU_API_KEY }}" | docker login -u _ --password-stdin $HEROKU_REG
+
+      # Heroku dynoi su amd64 — forsiramo platformu da build bude kompatibilan
+      - name: Set Docker platform
+        run: echo "DOCKER_DEFAULT_PLATFORM=linux/amd64" >> $GITHUB_ENV
+
+      - name: Build (root context, worker/Dockerfile)
+        run: |
+          docker build \
+            --platform=linux/amd64 \
+            -f worker/Dockerfile \
+            -t $IMAGE \
+            .
+
+      - name: Push image
+        run: docker push $IMAGE
+
+      # Release putem Heroku API-ja (ekvivalent `heroku container:release worker`)
+      - name: Release worker dyno
+        run: |
+          IMG_ID=$(docker inspect $IMAGE --format='{{.Id}}')
+          curl -n -X PATCH "https://api.heroku.com/apps/${{ env.HEROKU_APP }}/formation" \
+            -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
+            -H "Authorization: Bearer ${{ secrets.HEROKU_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+                  \"updates\": [
+                    {
+                      \"type\": \"worker\",
+                      \"docker_image\": \"${IMG_ID}\",
+                      \"quantity\": 1
+                    }
+                  ]
+                }"
