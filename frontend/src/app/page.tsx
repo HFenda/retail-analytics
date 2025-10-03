@@ -60,14 +60,35 @@ export default function Home() {
     form.append("file", file);
     form.append("vid_stride", "6");
 
+    // sigurniji API URL bez duplog slasha
+    const base = API.replace(/\/+$/, "");
+
+    // timeout da UI ne “visi” ako backend pukne
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 60_000);
+
     try {
-      const r = await fetch(`${API}/api/v1/analyze`, { method: "POST", body: form });
-      if (!r.ok) throw new Error(await r.text());
+      const r = await fetch(`${base}/api/v1/analyze`, {
+        method: "POST",
+        body: form,
+        // važno: nemoj slati cookies/cred preko cross-origin
+        credentials: "omit",
+        // mode je ionako "cors" po defaultu u browseru, eksplicitno je ok
+        mode: "cors",
+        signal: controller.signal,
+      });
+
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        throw new Error(txt || `HTTP ${r.status}`);
+      }
       const data: Result = await r.json();
       setRes(data); setShow(true); setActiveTab("overview");
     } catch (err: any) {
-      setError(err?.message || "Server error.");
+      if (err?.name === "AbortError") setError("Request timeout (60s).");
+      else setError(err?.message || "Server error.");
     } finally {
+      clearTimeout(t);
       setLoading(false);
     }
   }

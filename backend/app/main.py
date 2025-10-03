@@ -12,11 +12,16 @@ if str(ROOT) not in sys.path:
 
 app = FastAPI(title="Retail Analytics")
 
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN")
+
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://retail-analytics-mauve.vercel.app", 
 ]
+
+if FRONTEND_ORIGIN:
+    ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
