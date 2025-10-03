@@ -60,30 +60,47 @@ export default function Home() {
     form.append("file", file);
     form.append("vid_stride", "6");
 
-    // sigurniji API URL bez duplog slasha
-    const base = API.replace(/\/+$/, "");
-
-    // timeout da UI ne “visi” ako backend pukne
+    const base = API.replace(/\/+$/, ""); // da ne dodaš dupli slash
     const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 60_000);
+    const t = setTimeout(() => controller.abort(), 60_000); // abort nakon 60s
 
     try {
       const r = await fetch(`${base}/api/v1/analyze`, {
         method: "POST",
         body: form,
-        // važno: nemoj slati cookies/cred preko cross-origin
         credentials: "omit",
-        // mode je ionako "cors" po defaultu u browseru, eksplicitno je ok
         mode: "cors",
         signal: controller.signal,
       });
 
-      if (!r.ok) {
-        const txt = await r.text().catch(() => "");
-        throw new Error(txt || `HTTP ${r.status}`);
+      if (r.status === 202) {
+        // asinhrono: vrati samo job_id i status_url
+        const seed = await r.json(); 
+        let result: Result | null = null;
+        let attempts = 0;
+
+        while (attempts < 180) { // max ~3 min pollanja
+          await new Promise(res => setTimeout(res, 2000));
+          const sr = await fetch(`${base}${seed.status_url}`, { credentials: "omit", mode: "cors" });
+          if (!sr.ok) throw new Error(await sr.text());
+          const sj = await sr.json();
+          if (sj.status === "processing") { attempts++; continue; }
+          // čim dobijemo pravi rezultat (isti oblik kao prije)
+          result = sj;
+          break;
+        }
+        if (!result) throw new Error("Processing timeout on backend.");
+        setRes(result); setShow(true); setActiveTab("overview");
+
+      } else {
+        // sinkroni način (stari kod)
+        if (!r.ok) {
+          const txt = await r.text().catch(() => "");
+          throw new Error(txt || `HTTP ${r.status}`);
+        }
+        const data: Result = await r.json();
+        setRes(data); setShow(true); setActiveTab("overview");
       }
-      const data: Result = await r.json();
-      setRes(data); setShow(true); setActiveTab("overview");
     } catch (err: any) {
       if (err?.name === "AbortError") setError("Request timeout (60s).");
       else setError(err?.message || "Server error.");
