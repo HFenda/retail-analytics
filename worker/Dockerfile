@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /worker
 COPY requirements.in /worker/
-RUN pip install --no-cache-dir -r requirements.in
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --timeout=300 --retries=20 --prefer-binary -r requirements.in
 COPY . /worker
 CMD ["python","run_worker.py"]

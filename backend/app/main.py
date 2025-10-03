@@ -12,12 +12,18 @@ app = FastAPI(title="Retail Analytics")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
+    allow_origins=[
+        os.getenv("ALLOWED_ORIGINS", "*"),
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "*",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Lokalni storage mount (koristi se samo kad STORAGE_BACKEND != r2)
 STORAGE = Path(os.getenv("STORAGE_DIR", str(ROOT / "storage")))
 STORAGE.mkdir(parents=True, exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(STORAGE)), name="files")

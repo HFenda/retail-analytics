@@ -1,0 +1,50 @@
+name: Deploy Backend to Heroku
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-heroku-backend.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HEROKU_APP: ra-backend
+      HEROKU_REG: registry.heroku.com
+      IMAGE: registry.heroku.com/ra-backend/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Heroku Registry
+        run: |
+          echo "${{ secrets.HEROKU_API_KEY }}" | docker login -u _ -p "${{ secrets.HEROKU_API_KEY }}" $HEROKU_REG
+
+      - name: Set Docker platform
+        run: echo "DOCKER_DEFAULT_PLATFORM=linux/amd64" >> $GITHUB_ENV
+
+      - name: Build (linux/amd64, no cache)
+        working-directory: backend
+        run: |
+          docker build --platform=linux/amd64 -t $IMAGE .
+
+      - name: Push
+        run: docker push $IMAGE
+
+      - name: Release
+        run: |
+          curl -n -X PATCH https://api.heroku.com/apps/${{ env.HEROKU_APP }}/formation \
+           -d '{
+                 "updates": [
+                   {
+                     "type": "web",
+                     "docker_image": "'"$(docker inspect $IMAGE --format={{.Id}})"'"
+                   }
+                 ]
+               }' \
+           -H "Content-Type: application/json" \
+           -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
+           -H "Authorization: Bearer ${{ secrets.HEROKU_API_KEY }}"
