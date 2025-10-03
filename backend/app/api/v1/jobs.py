@@ -2,10 +2,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
-import os, json
+import os, json, uuid, time
 
 from app.services.storage import save_upload, job_dir, status_path
-from app.services.processor import new_job_id
+# processor NE koristimo više u /analyze (obradu radi worker)
+# from app.services.processor import run_pipeline, new_job_id
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
@@ -14,89 +15,99 @@ STORAGE = Path(os.getenv("STORAGE_DIR", str(ROOT / "storage")))
 
 def to_url(p: str) -> str:
     abs_p = Path(p).resolve()
-    rel = abs_p.relative_to(STORAGE)
+    rel = abs_p.relative_to(STORAGE)   # pukne ako nije u storage/
     return "/files/" + rel.as_posix()
 
-@router.post("/analyze")
+@router.post("/analyze", status_code=202)
 async def analyze(file: UploadFile = File(...), vid_stride: int = 6):
     """
-    ASYNC: primi upload, vrati 202 + job_id + status_url.
-    Worker će pokupiti iz uploads/ i generirati rezultate u results/<job_id>/...
+    ASINHRONO:
+    1) Čuvamo upload u storage (lokalni ili R2 preko storage.py).
+    2) Kreiramo job_id + status pending.
+    3) Vraćamo 202 i job_id odmah (obradu radi worker iz uploads/).
     """
     try:
-        # 1) spremi upload (u STORAGE/uploads/..)
+        # 1) spremi upload
         video_path = save_upload(file)
 
-        # 2) napravi job_id i pripremi radni dir (da postoji results/<job_id>)
-        jid = new_job_id()
-        _ = job_dir(jid)
+        # 2) kreiraj job_id i inicijalni status
+        job_id = uuid.uuid4().hex
+        jd = job_dir(job_id)
+        st = status_path(job_id)
+        st.parent.mkdir(parents=True, exist_ok=True)
+        st.write_text(json.dumps({
+            "status": "pending",
+            "ts": int(time.time()),
+            "file": Path(video_path).name,
+            "vid_stride": vid_stride
+        }, indent=2), encoding="utf-8")
 
-        # 3) zapiši početni status (nije nužno, ali korisno)
-        sp = status_path(jid)
-        sp.parent.mkdir(parents=True, exist_ok=True)
-        sp.write_text(json.dumps({"status": "processing"}), encoding="utf-8")
+        # 3) vrati 202 sa linkovima koje frontend može da koristi za poll
+        return JSONResponse({
+            "job_id": job_id,
+            "status_url": f"/api/v1/status/{job_id}",
+            "result_url": f"/api/v1/result/{job_id}",
+            "message": "Accepted. Worker će obraditi u pozadini."
+        }, status_code=202)
 
-        # 4) vrati 202 Accepted + gdje da se polla
-        return JSONResponse(
-            {"job_id": jid, "status": "processing", "status_url": f"/api/v1/jobs/{jid}"},
-            status_code=202
-        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/jobs/{job_id}")
-def get_job(job_id: str):
+@router.get("/status/{job_id}")
+def job_status(job_id: str):
     """
-    Vrati status ili kompletne rezultate u ISTOM obliku kao i stari sinkroni endpoint.
+    Vrati status.json za dati job_id.
     """
-    # status.json piše worker u STORAGE/status/<job_id>.json
-    sp = status_path(job_id)
-    if not sp.exists():
-        # još ništa (ili je worker nije krenuo)
-        return {"status": "processing"}
+    st = status_path(job_id)
+    if not st.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    data = json.loads(st.read_text(encoding="utf-8"))
+    return data
 
-    data = json.loads(sp.read_text(encoding="utf-8"))
-    st = data.get("status", "processing")
-    if st != "done":
-        # može biti "processing" ili "failed"
-        if st == "failed":
-            raise HTTPException(status_code=500, detail=data.get("error", "failed"))
-        return {"status": "processing"}
+@router.get("/result/{job_id}")
+def job_result(job_id: str):
+    """
+    Kad je gotovo, isporuči rezultat u ISTOM obliku kao i ranije
+    (tj. ono što je sinhroni analyze vraćao).
+    Pretpostavka: worker upisuje canonical izlaz u results/{job_id}/response.json
+    sa istim poljima, a fajlove snima u storage i zato ih možemo mapirati u /files URLs.
+    """
+    jd = Path(job_dir(job_id))
+    resp = jd / "response.json"
+    if not resp.exists():
+        # Ako nije gotovo, vrati status
+        st = status_path(job_id)
+        if st.exists():
+            return JSONResponse({"status": "processing"}, status_code=202)
+        raise HTTPException(status_code=404, detail="Job not found")
 
-    # Ako je gotovo, složi isti output kao prije:
-    # Pretpostavka: worker je generirao iste datoteke/strukturu u results/<job_id>/...
-    workdir = STORAGE / "results" / job_id
+    payload = json.loads(resp.read_text(encoding="utf-8"))
 
-    # Ovdje čitaš ono što je worker napravio – nazivi datoteka kao i ranije:
-    # counts.csv, analysis per_sec.csv, by_minute.csv, peaks.csv, heatmap/... , snapshot.jpg
-    counts_csv = workdir / "counts.csv"
-    per_sec = workdir / "analysis" / "per_sec.csv"
-    by_min  = workdir / "analysis" / "by_minute.csv"
-    peaks   = workdir / "analysis" / "peaks.csv"
-    heat    = workdir / "heatmap"
-    snap    = workdir / "snapshot.jpg"
+    # Mapiraj relativne putanje na /files/ URL (ako već nisu apsolutni linkovi)
+    def absurl(u: str | None) -> str | None:
+        if not u:
+            return None
+        if u.startswith("http://") or u.startswith("https://") or u.startswith("/files/"):
+            return u
+        return to_url(u)
 
-    # unique_total/peak – ako ih worker već računa i negdje sprema (npr. u response.json),
-    # pročitaj iz njega; ili ako imaš CSV iz kojeg se čita – minimalno:
-    uniq_total = data.get("unique_total")
-    peak = data.get("peak")
-
+    # Očekujemo polja kao ranije
     out = {
-        "job_id": job_id,
-        "video": None,  # ili worker negdje sprema relativni path
-        "counts_csv": to_url(str(counts_csv)),
-        "unique_total": uniq_total,
-        "peak": peak,
-        "per_sec_csv": to_url(str(per_sec)),
-        "by_min_csv":  to_url(str(by_min)),
-        "peaks_csv":   to_url(str(peaks)),
+        "job_id": payload.get("job_id", job_id),
+        "video": absurl(payload.get("video")),
+        "counts_csv": absurl(payload["counts"]["csv"]) if payload.get("counts") else None,
+        "unique_total": payload["counts"]["unique_total"] if payload.get("counts") else None,
+        "peak": payload["counts"]["peak"] if payload.get("counts") else None,
+        "per_sec_csv": absurl(payload["analysis"]["files"]["per_sec"]) if payload.get("analysis") else None,
+        "by_min_csv":  absurl(payload["analysis"]["files"]["by_minute"]) if payload.get("analysis") else None,
+        "peaks_csv":   absurl(payload["analysis"]["files"]["peaks"]) if payload.get("analysis") else None,
         "heatmap": {
-            "overlay":         to_url(str(heat / "heatmap_overlay.png")),
-            "colored":         to_url(str(heat / "heatmap_colored.png")),
-            "gray":            to_url(str(heat / "heatmap_gray.png")),
-            "transparent_png": to_url(str(heat / "heatmap_transparent.png")),
-            "preview":         to_url(str(heat / "preview.jpg")),
-        },
-        "snapshot": to_url(str(snap)),
+            "overlay":         absurl(payload["heatmap"]["artifacts"]["overlay"]) if payload.get("heatmap") else None,
+            "colored":         absurl(payload["heatmap"]["artifacts"]["colored"]) if payload.get("heatmap") else None,
+            "gray":            absurl(payload["heatmap"]["artifacts"]["gray"]) if payload.get("heatmap") else None,
+            "transparent_png": absurl(payload["heatmap"]["artifacts"]["transparent_png"]) if payload.get("heatmap") else None,
+            "preview":         absurl(payload["heatmap"]["artifacts"]["preview"]) if payload.get("heatmap") else None,
+        } if payload.get("heatmap") else None,
+        "snapshot": absurl(payload.get("snapshot", {}).get("out") if isinstance(payload.get("snapshot"), dict) else payload.get("snapshot")),
     }
     return JSONResponse(out)

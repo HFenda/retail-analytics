@@ -51,6 +51,41 @@ export default function Home() {
     if (f) setFile(f);
   };
 
+  async function fetchJSON(url: string, opts: RequestInit = {}) {
+    const r = await fetch(url, { ...opts, credentials: "omit", mode: "cors" });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      throw new Error(txt || `HTTP ${r.status}`);
+    }
+    return r.json();
+  }
+
+  async function pollStatus(base: string, job_id: string, onProgress?: (s: string) => void) {
+    const statusUrl = `${base}/api/v1/status/${job_id}`;
+    const resultUrl = `${base}/api/v1/result/${job_id}`;
+
+    const started = Date.now();
+    const HARD_LIMIT_MS = 15 * 60 * 1000; // 15 min
+
+    while (true) {
+      if (Date.now() - started > HARD_LIMIT_MS) throw new Error("Processing timeout on backend.");
+
+      const s = await fetchJSON(statusUrl);
+      if (onProgress) onProgress(s?.status || "processing");
+
+      if (s?.status === "done") {
+        // FINALNI rezultat u TVOM starom formatu
+        const res = await fetchJSON(resultUrl);
+        return res;
+      }
+      if (s?.status === "failed") {
+        throw new Error(s?.error || "Processing failed.");
+      }
+
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!file) { setError("Select a video file."); return; }
@@ -60,52 +95,21 @@ export default function Home() {
     form.append("file", file);
     form.append("vid_stride", "6");
 
-    const base = API.replace(/\/+$/, ""); // da ne dodaš dupli slash
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 60_000); // abort nakon 60s
+    const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/+$/, "");
 
     try {
-      const r = await fetch(`${base}/api/v1/analyze`, {
-        method: "POST",
-        body: form,
-        credentials: "omit",
-        mode: "cors",
-        signal: controller.signal,
-      });
+      // 1) upload -> očekujemo 202 + job_id + status_url/result_url
+      const init = await fetchJSON(`${base}/api/v1/analyze`, { method: "POST", body: form });
 
-      if (r.status === 202) {
-        // asinhrono: vrati samo job_id i status_url
-        const seed = await r.json(); 
-        let result: Result | null = null;
-        let attempts = 0;
+      const job_id = init?.job_id;
+      if (!job_id) throw new Error("No job_id returned.");
 
-        while (attempts < 180) { // max ~3 min pollanja
-          await new Promise(res => setTimeout(res, 2000));
-          const sr = await fetch(`${base}${seed.status_url}`, { credentials: "omit", mode: "cors" });
-          if (!sr.ok) throw new Error(await sr.text());
-          const sj = await sr.json();
-          if (sj.status === "processing") { attempts++; continue; }
-          // čim dobijemo pravi rezultat (isti oblik kao prije)
-          result = sj;
-          break;
-        }
-        if (!result) throw new Error("Processing timeout on backend.");
-        setRes(result); setShow(true); setActiveTab("overview");
-
-      } else {
-        // sinkroni način (stari kod)
-        if (!r.ok) {
-          const txt = await r.text().catch(() => "");
-          throw new Error(txt || `HTTP ${r.status}`);
-        }
-        const data: Result = await r.json();
-        setRes(data); setShow(true); setActiveTab("overview");
-      }
+      // 2) poll dok worker ne završi, onda povuci finalni payload (isti oblik kao prije)
+      const finalRes: Result = await pollStatus(base, job_id);
+      setRes(finalRes); setShow(true); setActiveTab("overview");
     } catch (err: any) {
-      if (err?.name === "AbortError") setError("Request timeout (60s).");
-      else setError(err?.message || "Server error.");
+      setError(err?.message || "Server error.");
     } finally {
-      clearTimeout(t);
       setLoading(false);
     }
   }
