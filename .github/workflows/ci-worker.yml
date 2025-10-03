@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     paths:
       - "worker/**"
+      - "ml/**"
       - ".github/workflows/ci-worker.yml"
   workflow_dispatch: {}
 
@@ -40,13 +41,13 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ env.OWNER_LC }}
-          # Može i: password: ${{ secrets.GITHUB_TOKEN }} (ako Actions imaju Write packages)
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Build & Push
         uses: docker/build-push-action@v6
         with:
-          context: ./worker
+          context: .                      # ⬅ root da vidi ml/
+          file: worker/Dockerfile         # ⬅ Dockerfile u worker/
           push: true
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max

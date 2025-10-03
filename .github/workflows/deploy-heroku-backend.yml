@@ -6,6 +6,7 @@ on:
     branches: [ main ]
     paths:
       - 'backend/**'
+      - 'ml/**'
       - '.github/workflows/deploy-heroku-backend.yml'
 
 jobs:
@@ -15,21 +16,21 @@ jobs:
       HEROKU_APP: ra-backend
       HEROKU_REG: registry.heroku.com
       IMAGE: registry.heroku.com/ra-backend/web
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Login to Heroku Registry
         run: |
-          echo "${{ secrets.HEROKU_API_KEY }}" | docker login -u _ -p "${{ secrets.HEROKU_API_KEY }}" $HEROKU_REG
+          echo "${{ secrets.HEROKU_API_KEY }}" | docker login -u _ --password-stdin $HEROKU_REG
 
       - name: Set Docker platform
         run: echo "DOCKER_DEFAULT_PLATFORM=linux/amd64" >> $GITHUB_ENV
 
-      - name: Build (linux/amd64, no cache)
-        working-directory: backend
+      - name: Build (linux/amd64, include ml/)
         run: |
-          docker build --platform=linux/amd64 -t $IMAGE .
+          docker build --platform=linux/amd64 -f backend/Dockerfile -t $IMAGE .
 
       - name: Push
         run: docker push $IMAGE

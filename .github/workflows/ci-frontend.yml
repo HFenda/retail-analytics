@@ -40,7 +40,6 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ env.OWNER_LC }}
-          # Može i: password: ${{ secrets.GITHUB_TOKEN }} (ako Actions imaju Write packages)
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Build & Push
