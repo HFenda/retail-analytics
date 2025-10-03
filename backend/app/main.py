@@ -1,8 +1,10 @@
+# app/main.py
 from pathlib import Path
 import os, sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -10,21 +12,20 @@ if str(ROOT) not in sys.path:
 
 app = FastAPI(title="Retail Analytics")
 
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://retail-analytics-mauve.vercel.app", 
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        os.getenv("ALLOWED_ORIGINS", "*"),
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://retail-analytics-mauve.vercel.app",
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Lokalni storage mount (koristi se samo kad STORAGE_BACKEND != r2)
 STORAGE = Path(os.getenv("STORAGE_DIR", str(ROOT / "storage")))
 STORAGE.mkdir(parents=True, exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(STORAGE)), name="files")
