@@ -1,156 +1,154 @@
-import os, time, json, uuid, tempfile, logging
+import os, time, json, uuid, shutil, logging, tempfile
 from pathlib import Path
+
+from backend.app.services.storage import (
+    BASE, status_path, upload_path_and_url, job_dir, IS_R2
+)
+from backend.app.services.processor import run_pipeline
+from backend.app.services.storage import ensure_dirs  # koristi /storage strukturu
+
+# R2/S3 download (minimalno)
 import boto3
 from botocore.client import Config
-import mimetypes
 
-# === R2 env ===
-R2_ACCOUNT_ID    = os.getenv("R2_ACCOUNT_ID")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_KEY    = os.getenv("R2_SECRET_ACCESS_KEY")
-R2_BUCKET        = os.getenv("R2_BUCKET", "retail-analytics")
-R2_ENDPOINT      = os.getenv("R2_ENDPOINT")  # https://<account>.r2.cloudflarestorage.com
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(levelname)s: %(message)s")
+log = logging.getLogger("worker")
 
-# === Worker tunables ===
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "3"))
-VID_STRIDE   = int(os.getenv("VID_STRIDE", "6"))
-YOLO_MODEL_REF = os.getenv("YOLO_MODEL_REF", "yolov8n.pt")
 
-# === ML imports (NE diraj svoj ml/) ===
-from ml import (
-    run_unique_count,
-    run_analysis,
-    run_people_heatmap,
-    run_snapshot_peak,
-)
+# R2/S3 client ako je uključen
+_S3 = None
+_BUCKET = None
+if IS_R2:
+    access_key = os.getenv("R2_ACCESS_KEY_ID")
+    secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
+    endpoint   = os.getenv("R2_ENDPOINT") or os.getenv("R2_ENDPOINT_URL")
+    region     = os.getenv("R2_REGION") or "auto"
+    _BUCKET    = os.getenv("R2_BUCKET", "retail-analytics")
+    if not (access_key and secret_key and endpoint and _BUCKET):
+        raise RuntimeError("R2 env varijable nisu kompletne.")
+    _S3 = boto3.client(
+        "s3",
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        endpoint_url=endpoint,
+        region_name=None if region == "auto" else region,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
 
-# === R2 client ===
-_sess = boto3.session.Session()
-s3 = _sess.client(
-    "s3",
-    endpoint_url=R2_ENDPOINT,
-    aws_access_key_id=R2_ACCESS_KEY_ID,
-    aws_secret_access_key=R2_SECRET_KEY,
-    config=Config(signature_version="s3v4"),
-    region_name="auto",
-)
+def _r2_download(key: str, dest_path: Path):
+    assert _S3 is not None
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest_path, "wb") as f:
+        _S3.download_fileobj(_BUCKET, key, f)
+    return str(dest_path)
 
-def k_uploads(name:str) -> str: return f"uploads/{name}"
-def k_results(job_id:str, rel:str) -> str: return f"results/{job_id}/{rel.lstrip('/')}"
-def k_status(job_id:str) -> str: return f"status/{job_id}.json"
-
-def put_json(key:str, payload:dict):
-    s3.put_object(Bucket=R2_BUCKET, Key=key, Body=json.dumps(payload).encode("utf-8"),
-                  ContentType="application/json")
-
-def put_file(key:str, path:str, content_type:str|None=None):
-    if not content_type:
-        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    with open(path, "rb") as f:
-        s3.put_object(Bucket=R2_BUCKET, Key=key, Body=f, ContentType=content_type)
-
-def get_json(key:str) -> dict:
-    obj = s3.get_object(Bucket=R2_BUCKET, Key=key)
-    return json.loads(obj["Body"].read().decode("utf-8"))
-
-def obj_exists(key:str) -> bool:
-    try:
-        s3.head_object(Bucket=R2_BUCKET, Key=key); return True
-    except Exception:
-        return False
-
-def list_pending_jobs():
-    # status/<job>.json == {"status":"pending", "file":"<upload_name>", "vid_stride":6, ...}
-    resp = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="status/")
+def _list_pending_jobs():
+    sp_dir = Path(BASE) / "status"
+    if not sp_dir.exists():
+        return []
     out = []
-    for it in resp.get("Contents", []):
-        key = it["Key"]
+    for p in sp_dir.glob("*.json"):
         try:
-            st = get_json(key)
-            if st.get("status") == "pending":
-                job_id = Path(key).stem
-                out.append((job_id, st))
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if data.get("status") == "pending":
+                jid = p.stem
+                out.append((jid, data))
         except Exception:
-            pass
+            continue
     return out
 
-def download_upload(upload_name:str) -> str:
-    key = k_uploads(upload_name)
-    fd, tmp = tempfile.mkstemp(suffix=Path(upload_name).suffix or ".mp4")
-    os.close(fd)
-    with open(tmp, "wb") as f:
-        s3.download_fileobj(R2_BUCKET, key, f)
-    return tmp
+def _write_status(job_id: str, payload: dict):
+    sp = status_path(job_id)
+    sp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-def process(job_id:str, upload_name:str, vid_stride:int):
-    tmp_video = download_upload(upload_name)
-    work = Path(tempfile.mkdtemp(prefix=f"job_{job_id}_"))
-    # 1) counts
-    counts_csv = str(work / "counts.csv")
-    uniq = run_unique_count(video=tmp_video, csv_path=counts_csv, vid_stride=vid_stride)
-    # 2) analysis
-    ana = run_analysis(video=tmp_video, counts_csv=counts_csv, vid_stride=vid_stride)
-    # 3) heatmap
-    heat_dir = str(work / "heatmap")
-    heat = run_people_heatmap(video=tmp_video, outdir=heat_dir)
-    # 4) snapshot
-    snap = str(work / "snapshot.jpg")
-    run_snapshot_peak(video=tmp_video, counts_csv=counts_csv, vid_stride=vid_stride, out=snap)
+def _flatten_response(job_id: str, pipeline_res: dict) -> dict:
+    """
+    Konstruiraj izlaz IDENTIČNOG oblika kao sinkroni backend ranije,
+    ali umjesto lokalnih /files/... linkova koristimo upload_path_and_url
+    da dobijemo R2 (ili /files u local modu).
+    """
+    # Svi pathovi u pipeline_res su lokalni; uploadaj ih (ili mapiraj na /files)
+    video_url     = upload_path_and_url(pipeline_res["video"], key=f"results/{job_id}/video.mp4", content_type="video/mp4")
+    counts_csv    = upload_path_and_url(pipeline_res["counts"]["csv"], key=f"results/{job_id}/counts.csv", content_type="text/csv")
+    per_sec_csv   = upload_path_and_url(pipeline_res["analysis"]["files"]["per_sec"],    key=f"results/{job_id}/occupancy_per_sec.csv", content_type="text/csv")
+    by_min_csv    = upload_path_and_url(pipeline_res["analysis"]["files"]["by_minute"],  key=f"results/{job_id}/by_minute.csv", content_type="text/csv")
+    peaks_csv     = upload_path_and_url(pipeline_res["analysis"]["files"]["peaks"],      key=f"results/{job_id}/peaks.csv", content_type="text/csv")
 
-    # Upload artefakte u results/<job>/…
-    put_file(k_results(job_id, "counts.csv"), counts_csv, "text/csv")
-    put_file(k_results(job_id, "occupancy_per_sec.csv"), ana["files"]["per_sec"], "text/csv")
-    put_file(k_results(job_id, "by_minute.csv"), ana["files"]["by_minute"], "text/csv")
-    put_file(k_results(job_id, "peaks.csv"), ana["files"]["peaks"], "text/csv")
-    put_file(k_results(job_id, "heatmap_overlay.png"), heat["artifacts"]["overlay"], "image/png")
-    put_file(k_results(job_id, "heatmap_colored.png"), heat["artifacts"]["colored"], "image/png")
-    put_file(k_results(job_id, "heatmap_gray.png"),    heat["artifacts"]["gray"],    "image/png")
-    put_file(k_results(job_id, "heatmap_transparent.png"), heat["artifacts"]["transparent_png"], "image/png")
-    put_file(k_results(job_id, "preview.jpg"), heat["artifacts"]["preview"], "image/jpeg")
-    put_file(k_results(job_id, "snapshot.jpg"), snap, "image/jpeg")
+    heat_overlay  = upload_path_and_url(pipeline_res["heatmap"]["artifacts"]["overlay"],         key=f"results/{job_id}/heatmap/overlay.png",        content_type="image/png")
+    heat_colored  = upload_path_and_url(pipeline_res["heatmap"]["artifacts"]["colored"],         key=f"results/{job_id}/heatmap/colored.png",        content_type="image/png")
+    heat_gray     = upload_path_and_url(pipeline_res["heatmap"]["artifacts"]["gray"],            key=f"results/{job_id}/heatmap/gray.png",           content_type="image/png")
+    heat_trans    = upload_path_and_url(pipeline_res["heatmap"]["artifacts"]["transparent_png"], key=f"results/{job_id}/heatmap/transparent.png",    content_type="image/png")
+    heat_preview  = upload_path_and_url(pipeline_res["heatmap"]["artifacts"]["preview"],         key=f"results/{job_id}/heatmap/preview.jpg",        content_type="image/jpeg")
 
-    # response.json (RELATIVNI ključevi – backend će ih presignati)
-    response = {
-        "counts_csv":        k_results(job_id, "counts.csv"),
-        "per_sec_csv":       k_results(job_id, "occupancy_per_sec.csv"),
-        "by_min_csv":        k_results(job_id, "by_minute.csv"),
-        "peaks_csv":         k_results(job_id, "peaks.csv"),
+    snapshot_url  = upload_path_and_url(pipeline_res["snapshot"]["out"], key=f"results/{job_id}/snapshot.jpg", content_type="image/jpeg")
+
+    return {
+        "job_id": job_id,
+        "video": video_url,
+        "counts_csv": counts_csv,
+        "unique_total": pipeline_res["counts"]["unique_total"],
+        "peak": pipeline_res["counts"]["peak"],
+        "per_sec_csv": per_sec_csv,
+        "by_min_csv": by_min_csv,
+        "peaks_csv": peaks_csv,
         "heatmap": {
-            "overlay":         k_results(job_id, "heatmap_overlay.png"),
-            "colored":         k_results(job_id, "heatmap_colored.png"),
-            "gray":            k_results(job_id, "heatmap_gray.png"),
-            "transparent_png": k_results(job_id, "heatmap_transparent.png"),
-            "preview":         k_results(job_id, "preview.jpg"),
+            "overlay": heat_overlay,
+            "colored": heat_colored,
+            "gray": heat_gray,
+            "transparent_png": heat_trans,
+            "preview": heat_preview,
         },
-        "snapshot":          k_results(job_id, "snapshot.jpg"),
-        "unique_total":      uniq["unique_total"],
-        "peak":              uniq["peak"],
+        "snapshot": snapshot_url,
     }
-    put_json(k_results(job_id, "response.json"), response)
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(levelname)s: %(message)s")
-    log = logging.getLogger("worker")
-    log.info("Worker up. Poll=%ss  R2=%s", POLL_SECONDS, R2_BUCKET)
+    log.info("Worker startuje. BASE=%s  R2=%s", BASE, "ON" if IS_R2 else "OFF")
+    ensure_dirs()
 
     while True:
         try:
-            pend = list_pending_jobs()
+            pend = _list_pending_jobs()
             if not pend:
-                time.sleep(POLL_SECONDS); continue
+                time.sleep(POLL_SECONDS)
+                continue
 
             for job_id, st in pend:
                 try:
-                    log.info("Job %s start (file=%s, stride=%s)", job_id, st["file"], st.get("vid_stride", VID_STRIDE))
-                    put_json(k_status(job_id), {**st, "status":"processing", "ts": int(time.time())})
-                    process(job_id, st["file"], int(st.get("vid_stride", VID_STRIDE)))
-                    put_json(k_status(job_id), {**st, "status":"done", "ts": int(time.time())})
-                    log.info("Job %s done", job_id)
+                    log.info("Job %s: start", job_id)
+                    _write_status(job_id, {**st, "status": "processing", "ts": int(time.time())})
+
+                    # gdje je video?
+                    if IS_R2 and st.get("r2_key"):
+                        # skini u tmp fajl
+                        with tempfile.TemporaryDirectory() as td:
+                            tmp_path = Path(td) / Path(st["r2_key"]).name
+                            _r2_download(st["r2_key"], tmp_path)
+                            video_path = str(tmp_path)
+                            workdir = job_dir(job_id)
+                            res = run_pipeline(video_path, workdir, vid_stride=int(st.get("vid_stride", 6)))
+                    else:
+                        # local shared disk (dev docker-compose)
+                        video_path = Path(BASE) / "uploads" / st["file"]
+                        if not video_path.exists():
+                            raise RuntimeError(f"Upload ne postoji: {video_path}")
+                        workdir = job_dir(job_id)
+                        res = run_pipeline(str(video_path), workdir, vid_stride=int(st.get("vid_stride", 6)))
+
+                    flat = _flatten_response(job_id, res)
+
+                    # snimi response.json (da backend /result/{id} može pročitati)
+                    (Path(workdir) / "response.json").write_text(json.dumps(flat, indent=2), encoding="utf-8")
+
+                    _write_status(job_id, {**st, "status": "done", "ts": int(time.time())})
+                    log.info("Job %s: done", job_id)
+
                 except Exception as e:
-                    log.exception("Job %s failed: %s", job_id, e)
-                    put_json(k_status(job_id), {**st, "status":"failed", "error": str(e), "ts": int(time.time())})
+                    log.exception("Job %s: fail: %s", job_id, e)
+                    _write_status(job_id, {**st, "status": "failed", "error": str(e), "ts": int(time.time())})
+
         except Exception as loop_err:
-            logging.exception("Loop error: %s", loop_err)
+            log.error("Global loop error: %s", loop_err)
             time.sleep(2)
 
 if __name__ == "__main__":
