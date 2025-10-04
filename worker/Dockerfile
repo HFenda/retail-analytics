@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# PyTorch CPU wheels
+# Omogući CPU wheelove za PyTorch
 ENV PIP_INDEX_URL=https://pypi.org/simple \
     PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 
@@ -14,19 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# requirements
+# deps
 COPY worker/requirements.in /tmp/requirements.in
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir --timeout=300 --retries=20 --prefer-binary -r /tmp/requirements.in
 
-# worker kod
+# kod workera
 COPY worker/ /app
 
-# da bi import "backend.app.services.processor" i "ml" radili:
+# da bi importi radili (run_pipeline i ml)
 COPY backend/app /app/app
 COPY ml /app/ml
 
 ENV PYTHONPATH=/app
 
-# pokretanje
 CMD ["python","run_worker.py"]

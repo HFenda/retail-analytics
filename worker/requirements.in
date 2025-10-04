@@ -3,11 +3,13 @@
 requests
 boto3
 botocore
-# ML isto kao backend
-ultralytics
+
+# ML (usklađeno s backendom)
+ultralytics==8.3.204
 opencv-python-headless
 numpy
 scipy
-# PyTorch CPU build (ide preko extra indexa iz Dockerfile-a)
-torch==2.4.1+cpu
-torchvision==0.19.1+cpu
+
+# PyTorch CPU (BEZ +cpu sufiksa; CPU wheel dolazi s extra indexa iz Dockerfile-a)
+torch==2.4.1
+torchvision==0.19.1
