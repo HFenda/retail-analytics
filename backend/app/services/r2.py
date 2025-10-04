@@ -7,7 +7,7 @@ R2_ACCOUNT_ID    = os.getenv("R2_ACCOUNT_ID")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_KEY    = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_BUCKET        = os.getenv("R2_BUCKET", "retail-analytics")
-R2_ENDPOINT      = os.getenv("R2_ENDPOINT")  # npr. https://<account>.r2.cloudflarestorage.com
+R2_ENDPOINT      = os.getenv("R2_ENDPOINT")
 
 _sess = boto3.session.Session()
 s3 = _sess.client(
