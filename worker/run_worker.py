@@ -7,7 +7,7 @@ import boto3
 from botocore.client import Config
 
 # koristimo isti processor kao backend
-from backend.app.services.processor import run_pipeline
+from app.services.processor import run_pipeline
 
 # ---------- ENV ----------
 BUCKET      = os.getenv("R2_BUCKET", "")
