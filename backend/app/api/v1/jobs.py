@@ -5,7 +5,7 @@ import os, json, time, uuid
 from app.services.storage import (
     save_upload, job_dir,
     write_status, read_status, read_result_json,
-    upload_path_and_url, # koristi se indirektno kroz worker
+    upload_path_and_url,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
@@ -14,11 +14,10 @@ STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local").lower()
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...), vid_stride: int = 6):
     try:
-        local_path = save_upload(file)         # snimi (i ako je R2, uploadan je pod uploads/<vid>)
+        local_path = save_upload(file)
         fname = os.path.basename(local_path)
         job_id = uuid.uuid4().hex
 
-        # pripremi prazan results dir (lokalno, radi developera)
         _ = job_dir(job_id)
 
         status_payload = {
