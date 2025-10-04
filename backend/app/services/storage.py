@@ -2,12 +2,10 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 import os, json, uuid, shutil
 
-# --- Mode ---
 ROOT = Path(__file__).resolve().parents[3]
 BASE = Path(os.getenv("STORAGE_DIR", str(ROOT / "storage")))
 IS_R2 = os.getenv("STORAGE_BACKEND", "local").lower() in ("r2", "s3")
 
-# --- R2 client (ako je aktivan) ---
 _s3 = None
 _bucket = None
 _public_base: Optional[str] = None
@@ -19,7 +17,10 @@ if IS_R2:
     _secret = os.getenv("R2_SECRET_ACCESS_KEY")
     _endpoint = os.getenv("R2_ENDPOINT") or os.getenv("R2_ENDPOINT_URL")
     _bucket  = os.getenv("R2_BUCKET", "retail-analytics")
-    _public_base = os.getenv("R2_PUBLIC_BASE_URL")  # npr. https://cdn.example.com
+    _public_base = (
+        os.getenv("R2_PUBLIC_BASE_URL")
+        or os.getenv("R2_PUBLIC_URL")
+    )
     if not (_access and _secret and _endpoint and _bucket):
         raise RuntimeError("R2 credentials/env nisu kompletni.")
     _s3 = boto3.client(
@@ -35,34 +36,43 @@ def ensure_dirs():
     for sub in ("uploads", "results", "status", "processed", "failed"):
         (BASE / sub).mkdir(parents=True, exist_ok=True)
 
-# ---------- LOCAL HELPERS ----------
 def _local_save(src_file, dest: Path):
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(src_file, f)
 
 def _local_url(rel_path: str) -> str:
-    # backend mounta /files na BASE; pa /files/<rel>
     return "/files/" + rel_path.replace("\\", "/")
 
-# ---------- R2 HELPERS ----------
+_DEF_CT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".csv": "text/csv",
+    ".mp4": "video/mp4",
+    ".json": "application/json",
+}
+def _guess_ct(path: Path, fallback: Optional[str]=None) -> Optional[str]:
+    return _DEF_CT.get(path.suffix.lower(), fallback)
+
+
 def _r2_put_file(key: str, local_path: str, content_type: Optional[str]=None) -> str:
     assert _s3 is not None and _bucket is not None
-    extra = {"ContentType": content_type} if content_type else {}
+    ct = content_type or _guess_ct(Path(local_path))
+    extra = {"ContentType": ct} if ct else {}
     with open(local_path, "rb") as f:
         _s3.upload_fileobj(f, _bucket, key, ExtraArgs=extra)
-    # URL
     if _public_base:
-        return f"{_public_base.rstrip('/')}/{key}"
-    # presigned GET (bez exp parametara da bude kratko živo—možeš i staviti Expires=..)
+        return f"{_public_base.rstrip('/')}/{key.lstrip('/')}"
     return _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=60*60)
 
 def _r2_put_bytes(key: str, data: bytes, content_type: Optional[str]=None) -> str:
     assert _s3 is not None and _bucket is not None
-    extra = {"ContentType": content_type} if content_type else {}
+    ct = content_type
+    extra = {"ContentType": ct} if ct else {}
     _s3.put_object(Bucket=_bucket, Key=key, Body=data, **extra)
     if _public_base:
-        return f"{_public_base.rstrip('/')}/{key}"
+        return f"{_public_base.rstrip('/')}/{key.lstrip('/')}"
     return _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=60*60)
 
 def _r2_get_text(key: str) -> str:
@@ -154,14 +164,19 @@ def list_pending_jobs() -> list[Tuple[str, Dict[str, Any]]]:
 
 def upload_path_and_url(local_path: str, key: Optional[str]=None, *, content_type: Optional[str]=None) -> str:
     """
-    Ako je R2 -> upload i vrati public/presigned URL.
+    Ako je R2 -> upload i vrati public/presigned URL (po defaultu zadrži relativni layout
+    unutar STORAGE_DIR, npr. results/<job_id>/heatmap/preview.jpg).
     Inače -> vrati /files/<rel>.
     """
     lp = Path(local_path).resolve()
     if IS_R2:
         if not key:
-            key = f"results/{lp.name}"
-        return _r2_put_file(key, str(lp), content_type=content_type)
+            try:
+                rel = lp.relative_to(BASE)
+            except ValueError:
+                rel = Path("results") / lp.name
+            key = str(rel).replace("\\", "/")
+        return _r2_put_file(key, str(lp), content_type=content_type or _guess_ct(lp))
     # local
     rel = lp.relative_to(BASE)
     return _local_url(str(rel))
