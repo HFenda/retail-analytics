@@ -1,11 +1,10 @@
-# worker/Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Pytorch CPU wheels
+# PyTorch CPU wheels
 ENV PIP_INDEX_URL=https://pypi.org/simple \
     PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 
@@ -15,18 +14,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# deps (worker/requirements.in mora postojati)
-COPY worker/requirements.in /app/
+# requirements
+COPY worker/requirements.in /tmp/requirements.in
 RUN python -m pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir --timeout=300 --retries=20 --prefer-binary -r requirements.in
+    pip install --no-cache-dir --timeout=300 --retries=20 --prefer-binary -r /tmp/requirements.in
 
-# kopiraj worker kod
-COPY worker /app
+# worker kod
+COPY worker/ /app
 
-# KLJUČNO: kopiraj backend/app i shared ml da bi importi radili
+# da bi import "backend.app.services.processor" i "ml" radili:
 COPY backend/app /app/app
 COPY ml /app/ml
 
 ENV PYTHONPATH=/app
 
-CMD ["python", "run_worker.py"]
+# pokretanje
+CMD ["python","run_worker.py"]

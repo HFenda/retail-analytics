@@ -1,6 +1,13 @@
 -i https://pypi.org/simple
-opencv-python-headless
-ultralytics
-numpy
+# core
 requests
-
+boto3
+botocore
+# ML isto kao backend
+ultralytics
+opencv-python-headless
+numpy
+scipy
+# PyTorch CPU build (ide preko extra indexa iz Dockerfile-a)
+torch==2.4.1+cpu
+torchvision==0.19.1+cpu
