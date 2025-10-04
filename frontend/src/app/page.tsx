@@ -3,7 +3,6 @@ import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileVideo, CheckCircle2, X, Loader2, Download, Image as ImageIcon, AlertTriangle, ChartBar, Flame, Link as LinkIcon } from "lucide-react";
 
-// -------------------- Types --------------------
 type HeatmapFiles = {
   overlay: string;
   colored: string;
@@ -74,7 +73,6 @@ export default function Home() {
       if (onProgress) onProgress(s?.status || "processing");
 
       if (s?.status === "done") {
-        // FINALNI rezultat u TVOM starom formatu
         const res = await fetchJSON(resultUrl);
         return res;
       }
@@ -98,13 +96,11 @@ export default function Home() {
     const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/+$/, "");
 
     try {
-      // 1) upload -> očekujemo 202 + job_id + status_url/result_url
       const init = await fetchJSON(`${base}/api/v1/analyze`, { method: "POST", body: form });
 
       const job_id = init?.job_id;
       if (!job_id) throw new Error("No job_id returned.");
 
-      // 2) poll dok worker ne završi, onda povuci finalni payload (isti oblik kao prije)
       const finalRes: Result = await pollStatus(base, job_id);
       setRes(finalRes); setShow(true); setActiveTab("overview");
     } catch (err: any) {
