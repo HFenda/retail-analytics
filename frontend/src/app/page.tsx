@@ -119,6 +119,14 @@ export default function Home() {
     return () => clearInterval(id);
   }, [loading]);
 
+  useEffect(() => {
+  if (show) {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }
+}, [show]);
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-neutral-950 to-neutral-900 text-neutral-100">
       <div className="mx-auto w-full max-w-7xl px-4 py-10">
@@ -219,14 +227,14 @@ export default function Home() {
         {/* Results Modal (custom, bez shadcn/ui) */}
         <AnimatePresence>
           {show && res && (
-            <div className="fixed inset-0 z-50">
+            <div className="fixed inset-0 z-50 overflow-y-auto">
               <div className="absolute inset-0 bg-black/60" onClick={() => setShow(false)} />
               <motion.div
                 initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.98 }}
                 transition={{ duration: 0.18 }}
-                className="absolute left-1/2 top-1/2 w-[95vw] max-w-4xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-white/10 bg-neutral-950 p-5 text-neutral-100 shadow-2xl"
+                className="absolute left-1/2 top-1/2 w-[95vw] max-w-4xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-white/10 bg-neutral-950 p-5 text-neutral-100 shadow-2xl max-h-[90vh] overflow-y-auto overscroll-contain touch-pan-y"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="mb-3 flex items-center justify-between">
